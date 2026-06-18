@@ -1,5 +1,6 @@
-import { RequestMethod } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { IncomingMessage } from "node:http";
+import { Params } from "nestjs-pino";
 
 /**
  * Factory function for configuring the logger module
@@ -18,20 +19,17 @@ import { ConfigService } from "@nestjs/config";
  */
 export const createLoggerOptions = (configService: ConfigService) => {
     // Disable pino-http's autoLogging - we handle HTTP logging explicitly
-    const enableHttpLogger = configService.get<boolean>(
+    const enableHttpLogger = configService.getOrThrow<boolean>(
         "LOG_ENABLE_HTTP_LOGGER",
-        false,
     );
 
     // Check if file logging is enabled
-    const logToFile = configService.get<boolean>("LOG_TO_FILE");
-    const logFilePath = configService.get<string>("LOG_FILE_PATH");
+    const logToFile = configService.getOrThrow<boolean>("LOG_TO_FILE");
+    const logFilePath = configService.getOrThrow<string>("LOG_FILE_PATH");
 
     // Check if OTel is disabled
-    const otelDisabled =
-        configService.get<string>("OTEL_SDK_DISABLED")?.toLowerCase() ===
-        "true";
-    const logLevel = configService.get("LOG_LEVEL", "info");
+    const otelDisabled = configService.getOrThrow<boolean>("OTEL_SDK_DISABLED");
+    const logLevel = configService.getOrThrow("LOG_LEVEL");
 
     // Build transport targets array
     const targets: any[] = [
@@ -43,7 +41,8 @@ export const createLoggerOptions = (configService: ConfigService) => {
                 colorize: true,
                 singleLine: false,
                 translateTime: "yyyy-mm-dd HH:MM:ss",
-                ignore: "pid,hostname,req,res,responseTime,context",
+                //ignore: "pid,hostname,req,res,responseTime,context",
+                ignore: "context",
                 messageFormat: "{if context}[{context}] {end}{msg}",
             },
         },
@@ -85,7 +84,18 @@ export const createLoggerOptions = (configService: ConfigService) => {
     return {
         pinoHttp: {
             level: logLevel,
-            autoLogging: enableHttpLogger,
+            autoLogging: {
+                ignore: (req: IncomingMessage) => {
+                    if (!enableHttpLogger) {
+                        return true;
+                    }
+                    //check if path includes /api to ignore it
+                    if (req.url && req.url.includes("/api")) {
+                        return true;
+                    }
+                    return false;
+                },
+            },
             transport: {
                 targets,
             },
@@ -114,6 +124,6 @@ export const createLoggerOptions = (configService: ConfigService) => {
                 }),
             },
         },
-        exclude: [{ path: "/session/:sessionId", method: RequestMethod.ALL }],
-    };
+        forRoutes: ["*splat"],
+    } as Params;
 };
