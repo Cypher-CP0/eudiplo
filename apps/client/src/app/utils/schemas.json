@@ -1853,6 +1853,30 @@
     }
   },
   {
+    "uri": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/ChainedAsVpConfig.schema.json",
+    "fileMatch": ["a://b/ChainedAsVpConfig*.schema.json"],
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/ChainedAsVpConfig.schema.json",
+      "title": "ChainedAsVpConfig",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable VP-backed chained AS mode",
+          "default": false
+        },
+        "presentationConfigId": {
+          "type": "string",
+          "description": "Presentation configuration ID used for OID4VP",
+          "example": "pid-no-hook"
+        }
+      },
+      "required": ["enabled", "presentationConfigId"],
+      "additionalProperties": false
+    }
+  },
+  {
     "uri": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/ChainedAsTokenConfig.schema.json",
     "fileMatch": ["a://b/ChainedAsTokenConfig*.schema.json"],
     "schema": {
@@ -1897,6 +1921,14 @@
             }
           ]
         },
+        "vp": {
+          "description": "VP-backed chained AS configuration",
+          "allOf": [
+            {
+              "$ref": "./ChainedAsVpConfig.schema.json"
+            }
+          ]
+        },
         "token": {
           "description": "Token configuration",
           "allOf": [
@@ -1912,6 +1944,70 @@
         }
       },
       "required": ["enabled"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "uri": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/ManagedAuthorizationServerConfig.schema.json",
+    "fileMatch": ["a://b/ManagedAuthorizationServerConfig*.schema.json"],
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/ManagedAuthorizationServerConfig.schema.json",
+      "title": "ManagedAuthorizationServerConfig",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable identifier used in the AS URL path",
+          "example": "pid-auth"
+        },
+        "label": {
+          "type": "string",
+          "description": "Human-friendly label for the UI",
+          "example": "PID Authorization Server"
+        },
+        "type": {
+          "enum": ["external", "oid4vp"],
+          "type": "string",
+          "description": "Authorization server implementation type",
+          "example": "external"
+        },
+        "issuer": {
+          "type": "string",
+          "format": "uri",
+          "description": "Issuer URL for external authorization servers",
+          "example": "https://auth.example.com"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether this managed authorization server is enabled",
+          "default": true
+        },
+        "presentationConfigId": {
+          "type": "string",
+          "description": "Presentation configuration ID to use for OID4VP",
+          "example": "playground-pid"
+        },
+        "immediateWalletRedirect": {
+          "type": "boolean",
+          "description": "Immediately redirect the browser into the wallet OID4VP request",
+          "default": true
+        },
+        "token": {
+          "description": "Token configuration for this authorization server",
+          "allOf": [
+            {
+              "$ref": "./ChainedAsTokenConfig.schema.json"
+            }
+          ]
+        },
+        "requireDPoP": {
+          "type": "boolean",
+          "description": "Require DPoP for token requests issued by this authorization server",
+          "default": false
+        }
+      },
+      "required": ["type"],
       "additionalProperties": false
     }
   },
@@ -2052,6 +2148,14 @@
             }
           ]
         },
+        "authorizationServers": {
+          "nullable": true,
+          "description": "Dedicated managed authorization servers hosted by this issuer.\nEach entry creates a distinct AS endpoint and can be bound to a different\npresentation configuration.",
+          "type": "array",
+          "items": {
+            "$ref": "./ManagedAuthorizationServerConfig.schema.json"
+          }
+        },
         "federation": {
           "nullable": true,
           "description": "Optional OpenID Federation configuration used for trust evaluation.\nWhen omitted, trust checks rely on existing LoTE trust-list behavior.",
@@ -2170,6 +2274,14 @@
               "$ref": "./ChainedAsConfig.schema.json"
             }
           ]
+        },
+        "authorizationServers": {
+          "nullable": true,
+          "description": "Dedicated managed authorization servers hosted by this issuer.\nEach entry creates a distinct AS endpoint and can be bound to a different\npresentation configuration.",
+          "type": "array",
+          "items": {
+            "$ref": "./ManagedAuthorizationServerConfig.schema.json"
+          }
         },
         "federation": {
           "nullable": true,
@@ -4605,9 +4717,18 @@
             }
           ]
         },
+        "webhookEndpointId": {
+          "type": "string",
+          "nullable": true,
+          "description": "Reference to the webhook endpoint used for notifications.\nOptional: if set, notifications will be sent to this endpoint."
+        },
+        "webhookEndpoint": {
+          "$ref": "./WebhookEndpointEntity.schema.json"
+        },
         "webhook": {
           "nullable": true,
           "description": "Optional webhook URL to receive the response.",
+          "deprecated": true,
           "type": "object",
           "allOf": [
             {
@@ -4735,9 +4856,18 @@
             }
           ]
         },
+        "webhookEndpointId": {
+          "type": "string",
+          "nullable": true,
+          "description": "Reference to the webhook endpoint used for notifications.\nOptional: if set, notifications will be sent to this endpoint."
+        },
+        "webhookEndpoint": {
+          "$ref": "./WebhookEndpointEntity.schema.json"
+        },
         "webhook": {
           "nullable": true,
           "description": "Optional webhook URL to receive the response.",
+          "deprecated": true,
           "type": "object",
           "allOf": [
             {
@@ -4815,9 +4945,18 @@
             }
           ]
         },
+        "webhookEndpointId": {
+          "type": "string",
+          "nullable": true,
+          "description": "Reference to the webhook endpoint used for notifications.\nOptional: if set, notifications will be sent to this endpoint."
+        },
+        "webhookEndpoint": {
+          "$ref": "./WebhookEndpointEntity.schema.json"
+        },
         "webhook": {
           "nullable": true,
           "description": "Optional webhook URL to receive the response.",
+          "deprecated": true,
           "type": "object",
           "allOf": [
             {

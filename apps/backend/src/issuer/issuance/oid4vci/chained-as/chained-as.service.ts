@@ -134,13 +134,25 @@ export class ChainedAsService {
         const issuanceConfig =
             await this.issuanceService.getIssuanceConfiguration(tenantId);
 
-        if (!issuanceConfig.chainedAs?.enabled) {
-            throw new NotFoundException(
-                "Chained Authorization Server is not enabled for this tenant",
-            );
+        const chainedServer = (issuanceConfig.authorizationServers ?? []).find(
+            (server) =>
+                server.enabled !== false &&
+                server.type === "chained" &&
+                server.upstream,
+        );
+
+        if (chainedServer?.upstream) {
+            return {
+                enabled: true,
+                upstream: chainedServer.upstream,
+                token: chainedServer.token,
+                requireDPoP: chainedServer.requireDPoP,
+            } as ChainedAsConfig;
         }
 
-        return issuanceConfig.chainedAs;
+        throw new NotFoundException(
+            "Chained Authorization Server is not enabled for this tenant",
+        );
     }
 
     /**
@@ -881,11 +893,6 @@ export class ChainedAsService {
         const baseUrl = this.getChainedAsBaseUrl(tenantId);
         const publicUrl = this.configService.getOrThrow<string>("PUBLIC_URL");
 
-        const issuanceConfig =
-            await this.issuanceService.getIssuanceConfiguration(tenantId);
-        const walletAttestationRequired =
-            issuanceConfig.walletAttestationRequired ?? false;
-
         const metadata: Record<string, unknown> = {
             issuer: baseUrl,
             authorization_endpoint: `${baseUrl}/authorize`,
@@ -894,21 +901,16 @@ export class ChainedAsService {
             jwks_uri: `${publicUrl}/.well-known/jwks.json/issuers/${tenantId}/chained-as`,
             response_types_supported: ["code"],
             grant_types_supported: ["authorization_code", "refresh_token"],
+            authorization_details_types_supported: ["openid_credential"],
+            token_endpoint_auth_methods_supported: [
+                "none",
+                "attest_jwt_client_auth",
+            ],
             code_challenge_methods_supported: ["S256"],
             dpop_signing_alg_values_supported: ["ES256", "ES384", "ES512"],
+            client_attestation_signing_alg_values_supported: ["ES256"],
+            client_attestation_pop_signing_alg_values_supported: ["ES256"],
         };
-
-        if (walletAttestationRequired) {
-            metadata.token_endpoint_auth_methods_supported = [
-                "attest_jwt_client_auth",
-            ];
-            metadata.client_attestation_signing_alg_values_supported = [
-                "ES256",
-            ];
-            metadata.client_attestation_pop_signing_alg_values_supported = [
-                "ES256",
-            ];
-        }
 
         return metadata;
     }
