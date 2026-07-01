@@ -37,7 +37,6 @@ module.exports = tseslint.config(
       '@typescript-eslint/explicit-module-boundary-types': 'off',
       '@typescript-eslint/no-empty-function': 'off',
       '@angular-eslint/use-lifecycle-interface': 'error',
-      '@angular-eslint/no-conflicting-lifecycle': 'error',
       '@angular-eslint/no-input-rename': 'error',
       '@angular-eslint/no-output-native': 'error',
       '@angular-eslint/no-output-on-prefix': 'error',
@@ -45,6 +44,7 @@ module.exports = tseslint.config(
       '@angular-eslint/use-pipe-transform-interface': 'error',
       '@angular-eslint/prefer-inject': 'off', // Disable for now as it requires major refactoring
       '@angular-eslint/no-empty-lifecycle-method': 'warn',
+      '@angular-eslint/prefer-on-push-component-change-detection': 'off',
     },
   },
   {
