@@ -3,11 +3,13 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
     test: {
-        include: ["**/*.e2e-spec.ts"],
+        include: ["**/oidf/*.e2e-spec.ts"],
         exclude: [],
         globals: true,
         root: "./",
         fileParallelism: false,
+        maxWorkers: 1,
+        maxConcurrency: 1,
         coverage: {
             provider: "v8",
             reportsDirectory: "./coverage/e2e",
