@@ -23,6 +23,7 @@ import { WebhookService } from "../../shared/utils/webhook/webhook.service";
 import { AuthResponse } from "../presentations/dto/auth-response.dto";
 import { IncompletePresentationException } from "../presentations/exceptions/incomplete-presentation.exception";
 import { PresentationsService } from "../presentations/presentations.service";
+import { applyTrustedAuthoritiesPolicy } from "./dcql-trusted-authorities.util";
 import { AuthorizationResponse } from "./dto/authorization-response.dto";
 import { PresentationRequestOptions } from "./dto/presentation-request.dto";
 
@@ -164,18 +165,20 @@ export class Oid4vpService {
                 );
             let regCert: string | undefined = undefined;
 
-            const dcql_query = JSON.parse(
+            let dcql_query = JSON.parse(
                 JSON.stringify(presentationConfig.dcql_query).replaceAll(
                     "<TENANT_URL>",
                     tenantHost,
                 ),
             );
 
-            //remove trusted_authorities from dcql
-            dcql_query.credentials = dcql_query.credentials.map((cred: any) => {
-                const { trusted_authorities, ...rest } = cred;
-                return rest;
-            });
+            // Some wallets do not yet handle trusted_authorities correctly.
+            // VP_REMOVE_TA is an escape hatch to strip it from the DCQL query
+            // sent to wallets; disabled by default.
+            dcql_query = applyTrustedAuthoritiesPolicy(
+                dcql_query,
+                !!this.configService.get<boolean>("VP_REMOVE_TA"),
+            );
 
             if (
                 presentationConfig.registration_cert &&
