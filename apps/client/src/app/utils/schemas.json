@@ -2477,7 +2477,8 @@
       "type": "object",
       "properties": {
         "id": {
-          "type": "string"
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$"
         },
         "format": {
           "type": "string"
@@ -5856,6 +5857,477 @@
         }
       },
       "required": ["providers", "default"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "uri": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/DbKmsConfigDto.schema.json",
+    "fileMatch": ["a://b/DbKmsConfigDto*.schema.json"],
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/DbKmsConfigDto.schema.json",
+      "title": "DbKmsConfigDto",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for this provider instance. Used when generating keys to specify which provider to use.",
+          "example": "main-vault"
+        },
+        "type": {
+          "enum": ["db"],
+          "type": "string",
+          "description": "Type of the KMS provider.",
+          "example": "db"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of this provider instance.",
+          "example": "Production HashiCorp Vault for signing keys"
+        }
+      },
+      "required": ["id", "type"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "uri": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/VaultKmsConfigDto.schema.json",
+    "fileMatch": ["a://b/VaultKmsConfigDto*.schema.json"],
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/VaultKmsConfigDto.schema.json",
+      "title": "VaultKmsConfigDto",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for this provider instance. Used when generating keys to specify which provider to use.",
+          "example": "main-vault"
+        },
+        "type": {
+          "enum": ["vault"],
+          "type": "string",
+          "description": "Type of the KMS provider.",
+          "example": "vault"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of this provider instance.",
+          "example": "Production HashiCorp Vault for signing keys"
+        },
+        "vaultUrl": {
+          "type": "string",
+          "description": "URL of the HashiCorp Vault instance. Supports ${ENV_VAR} placeholders.",
+          "example": "${VAULT_URL}"
+        },
+        "vaultToken": {
+          "type": "string",
+          "description": "Authentication token for HashiCorp Vault. Supports ${ENV_VAR} placeholders.",
+          "example": "${VAULT_TOKEN}"
+        }
+      },
+      "required": ["id", "type", "vaultUrl", "vaultToken"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "uri": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/AwsKmsConfigDto.schema.json",
+    "fileMatch": ["a://b/AwsKmsConfigDto*.schema.json"],
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/AwsKmsConfigDto.schema.json",
+      "title": "AwsKmsConfigDto",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for this provider instance. Used when generating keys to specify which provider to use.",
+          "example": "main-vault"
+        },
+        "type": {
+          "enum": ["aws-kms"],
+          "type": "string",
+          "description": "Type of the KMS provider.",
+          "example": "aws-kms"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of this provider instance.",
+          "example": "Production HashiCorp Vault for signing keys"
+        },
+        "region": {
+          "type": "string",
+          "description": "AWS region for KMS. Supports ${ENV_VAR} placeholders.",
+          "example": "${AWS_REGION}"
+        },
+        "accessKeyId": {
+          "type": "string",
+          "description": "AWS access key ID. Optional — uses SDK credential chain if not provided. Supports ${ENV_VAR} placeholders.",
+          "example": "${AWS_ACCESS_KEY_ID}"
+        },
+        "secretAccessKey": {
+          "type": "string",
+          "description": "AWS secret access key. Optional — uses SDK credential chain if not provided. Supports ${ENV_VAR} placeholders.",
+          "example": "${AWS_SECRET_ACCESS_KEY}"
+        }
+      },
+      "required": ["id", "type", "region"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "uri": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/Pkcs11KmsConfigDto.schema.json",
+    "fileMatch": ["a://b/Pkcs11KmsConfigDto*.schema.json"],
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/Pkcs11KmsConfigDto.schema.json",
+      "title": "Pkcs11KmsConfigDto",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for this provider instance. Used when generating keys to specify which provider to use.",
+          "example": "main-vault"
+        },
+        "type": {
+          "enum": ["pkcs11"],
+          "type": "string",
+          "description": "Type of the KMS provider.",
+          "example": "pkcs11"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of this provider instance.",
+          "example": "Production HashiCorp Vault for signing keys"
+        },
+        "library": {
+          "type": "string",
+          "description": "Absolute path to the PKCS#11 module library (.so/.dll/.dylib). Supports ${ENV_VAR} placeholders.",
+          "example": "${PKCS11_LIBRARY}"
+        },
+        "slot": {
+          "type": "object",
+          "description": "Slot selection. Either the numeric slot index (as a string for ENV interpolation, or a number) or the token label. Supports ${ENV_VAR} placeholders.",
+          "example": "${PKCS11_SLOT}"
+        },
+        "pin": {
+          "type": "string",
+          "description": "User PIN used for C_Login. Supports ${ENV_VAR} placeholders.",
+          "example": "${PKCS11_PIN}"
+        },
+        "readOnly": {
+          "type": "boolean",
+          "description": "Open the PKCS#11 session in read-only mode. Defaults to false.",
+          "example": false
+        }
+      },
+      "required": ["id", "type", "library", "slot", "pin"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "uri": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/HttpAuthBaseConfigDto.schema.json",
+    "fileMatch": ["a://b/HttpAuthBaseConfigDto*.schema.json"],
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/HttpAuthBaseConfigDto.schema.json",
+      "title": "HttpAuthBaseConfigDto",
+      "type": "object",
+      "properties": {
+        "type": {
+          "enum": ["none", "bearer", "oauth2-client-credentials", "mtls"],
+          "type": "string",
+          "description": "Authentication method for the remote KMS service."
+        }
+      },
+      "required": ["type"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "uri": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/HttpKmsConfigDto.schema.json",
+    "fileMatch": ["a://b/HttpKmsConfigDto*.schema.json"],
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/HttpKmsConfigDto.schema.json",
+      "title": "HttpKmsConfigDto",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for this provider instance. Used when generating keys to specify which provider to use.",
+          "example": "main-vault"
+        },
+        "type": {
+          "enum": ["http"],
+          "type": "string",
+          "description": "Type of the KMS provider.",
+          "example": "http"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of this provider instance.",
+          "example": "Production HashiCorp Vault for signing keys"
+        },
+        "baseUrl": {
+          "type": "string",
+          "description": "Base URL of the remote KMS microservice (no trailing slash). Supports ${ENV_VAR} placeholders.",
+          "example": "${KMS_SERVICE_URL}"
+        },
+        "auth": {
+          "description": "Authentication method for the remote KMS service. Supports bearer token, OAuth 2.0 client credentials, and mutual TLS. Omit (or set type to \"none\") for unauthenticated services.",
+          "allOf": [
+            {
+              "$ref": "./HttpAuthBaseConfigDto.schema.json"
+            }
+          ]
+        },
+        "keysPath": {
+          "type": "string",
+          "description": "Path prefix for key endpoints on the remote service. Defaults to /keys.",
+          "example": "/v1/keys"
+        },
+        "healthPath": {
+          "type": "string",
+          "description": "Path for the health check endpoint on the remote service. Defaults to /health.",
+          "example": "/health"
+        },
+        "canImport": {
+          "type": "boolean",
+          "description": "Whether the remote service supports key import via POST {keysPath}/{kid}/import. Defaults to false.",
+          "example": false
+        }
+      },
+      "required": ["id", "type", "baseUrl"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "uri": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/CscAuthorizeAuthDataDto.schema.json",
+    "fileMatch": ["a://b/CscAuthorizeAuthDataDto*.schema.json"],
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/CscAuthorizeAuthDataDto.schema.json",
+      "title": "CscAuthorizeAuthDataDto",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Authentication factor identifier expected by the CSC provider (e.g., PIN, OTP).",
+          "example": "PIN"
+        },
+        "value": {
+          "type": "string",
+          "description": "Authentication factor value sent to CSC credentials/authorize.",
+          "example": "123456"
+        }
+      },
+      "required": ["id", "value"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "uri": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/CscKmsConfigDto.schema.json",
+    "fileMatch": ["a://b/CscKmsConfigDto*.schema.json"],
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/CscKmsConfigDto.schema.json",
+      "title": "CscKmsConfigDto",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for this provider instance. Used when generating keys to specify which provider to use.",
+          "example": "main-vault"
+        },
+        "type": {
+          "enum": ["csc"],
+          "type": "string",
+          "description": "Type of the KMS provider.",
+          "example": "csc"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of this provider instance.",
+          "example": "Production HashiCorp Vault for signing keys"
+        },
+        "baseUrl": {
+          "type": "string",
+          "description": "Base URL of the CSC service (without trailing slash). Supports ${ENV_VAR} placeholders.",
+          "example": "${CSC_URL}"
+        },
+        "tokenUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "OAuth2 token endpoint URL for client-credentials flow. Supports ${ENV_VAR} placeholders.",
+          "example": "${CSC_TOKEN_URL}"
+        },
+        "clientId": {
+          "type": "string",
+          "description": "OAuth2 client ID. Supports ${ENV_VAR} placeholders.",
+          "example": "${CSC_CLIENT_ID}"
+        },
+        "clientSecret": {
+          "type": "string",
+          "description": "OAuth2 client secret. Supports ${ENV_VAR} placeholders.",
+          "example": "${CSC_CLIENT_SECRET}"
+        },
+        "scope": {
+          "type": "string",
+          "description": "OAuth2 scope to request during token acquisition.",
+          "example": "service"
+        },
+        "credentialId": {
+          "type": "string",
+          "description": "Default CSC credential ID. If omitted, the adapter calls credentials/list and picks the first entry.",
+          "example": "[INTESIQCSEALEC]_SEAL_351_SIGN_1781018892758"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Optional CSC user ID used in credentials/list requests.",
+          "example": "eudiplo_user"
+        },
+        "apiPath": {
+          "type": "string",
+          "description": "CSC API path prefix appended to baseUrl. Defaults to /csc/v2.",
+          "example": "/csc/v2"
+        },
+        "hashAlgorithmOid": {
+          "type": "string",
+          "description": "Hash algorithm OID for signatures/signHash and credentials/authorize. Defaults to SHA-256 OID.",
+          "example": "2.16.840.1.101.3.4.2.1"
+        },
+        "signAlgorithmOid": {
+          "type": "string",
+          "description": "Signature algorithm OID for signatures/signHash. Defaults to ecdsa-with-SHA256 OID.",
+          "example": "1.2.840.10045.4.3.2"
+        },
+        "sad": {
+          "type": "string",
+          "description": "Static SAD token. If set, the adapter sends it directly in signatures/signHash requests."
+        },
+        "useAuthorizeEndpoint": {
+          "type": "boolean",
+          "description": "When true and no static SAD is provided, the adapter calls credentials/authorize to obtain SAD before signatures/signHash.",
+          "example": false
+        },
+        "authorizeAuthData": {
+          "description": "Optional authData array passed to credentials/authorize (e.g., PIN/OTP factors).",
+          "type": "array",
+          "items": {
+            "$ref": "./CscAuthorizeAuthDataDto.schema.json"
+          }
+        }
+      },
+      "required": ["id", "type", "baseUrl", "tokenUrl", "clientId", "clientSecret"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "uri": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/KmsConfigDto.schema.json",
+    "fileMatch": ["a://b/KmsConfigDto*.schema.json"],
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/KmsConfigDto.schema.json",
+      "title": "KmsConfigDto",
+      "type": "object",
+      "properties": {
+        "defaultProvider": {
+          "type": "string",
+          "description": "ID of the default KMS provider. Defaults to \"db\" if not set.",
+          "example": "main-vault"
+        },
+        "providers": {
+          "type": "array",
+          "description": "List of KMS provider configurations. Each provider must have a unique id and a type.",
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "./DbKmsConfigDto.schema.json"
+              },
+              {
+                "$ref": "./VaultKmsConfigDto.schema.json"
+              },
+              {
+                "$ref": "./AwsKmsConfigDto.schema.json"
+              },
+              {
+                "$ref": "./Pkcs11KmsConfigDto.schema.json"
+              },
+              {
+                "$ref": "./HttpKmsConfigDto.schema.json"
+              },
+              {
+                "$ref": "./CscKmsConfigDto.schema.json"
+              }
+            ],
+            "discriminator": {
+              "propertyName": "type",
+              "mapping": {
+                "db": "#/components/schemas/DbKmsConfigDto",
+                "vault": "#/components/schemas/VaultKmsConfigDto",
+                "aws-kms": "#/components/schemas/AwsKmsConfigDto",
+                "pkcs11": "#/components/schemas/Pkcs11KmsConfigDto",
+                "http": "#/components/schemas/HttpKmsConfigDto",
+                "csc": "#/components/schemas/CscKmsConfigDto"
+              }
+            }
+          },
+          "example": [
+            {
+              "id": "db",
+              "type": "db",
+              "description": "Default database provider"
+            },
+            {
+              "id": "main-vault",
+              "type": "vault",
+              "description": "Production Vault",
+              "vaultUrl": "${VAULT_URL}",
+              "vaultToken": "${VAULT_TOKEN}"
+            },
+            {
+              "id": "aws",
+              "type": "aws-kms",
+              "description": "AWS KMS",
+              "region": "${AWS_REGION}"
+            }
+          ]
+        }
+      },
+      "required": ["providers"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "uri": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/KmsTenantConfigResponseDto.schema.json",
+    "fileMatch": ["a://b/KmsTenantConfigResponseDto*.schema.json"],
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/KmsTenantConfigResponseDto.schema.json",
+      "title": "KmsTenantConfigResponseDto",
+      "type": "object",
+      "properties": {
+        "tenantConfig": {
+          "nullable": true,
+          "description": "Tenant-specific KMS configuration from <CONFIG_FOLDER>/<tenantId>/kms.json. Null when no tenant file exists.",
+          "type": "object",
+          "allOf": [
+            {
+              "$ref": "./KmsConfigDto.schema.json"
+            }
+          ]
+        },
+        "effectiveConfig": {
+          "description": "Effective configuration used at runtime for the tenant (global + tenant merge).",
+          "allOf": [
+            {
+              "$ref": "./KmsConfigDto.schema.json"
+            }
+          ]
+        }
+      },
+      "required": ["effectiveConfig"],
       "additionalProperties": false
     }
   },
