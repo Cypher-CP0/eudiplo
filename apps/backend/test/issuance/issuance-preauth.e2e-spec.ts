@@ -28,6 +28,17 @@ setGlobalDispatcher(
     }),
 );
 
+async function resolveCredentialOffer(offerUri: string): Promise<any> {
+    const client = new Openid4vciClient({
+        callbacks: {
+            ...callbacks,
+            clientAuthentication: clientAuthenticationAnonymous(),
+        },
+    });
+
+    return client.resolveCredentialOffer(offerUri);
+}
+
 describe("Issuance - Pre-authorized Code Flow", () => {
     let app: INestApplication<App>;
     let authToken: string;
@@ -210,6 +221,57 @@ describe("Issuance - Pre-authorized Code Flow", () => {
 
         // Verify the webhook was called
         expect(nock.isDone()).toBe(true);
+    });
+
+    test("pre-authorized flow defaults to built-in authorization server", async () => {
+        const offerResponse = await request(app.getHttpServer())
+            .post("/issuer/offer")
+            .trustLocalhost()
+            .set("Authorization", `Bearer ${authToken}`)
+            .send({
+                response_type: "uri",
+                credentialConfigurationIds: ["pid-no-key"],
+                flow: "pre_authorized_code",
+            })
+            .expect(201);
+
+        const credentialOffer = await resolveCredentialOffer(
+            offerResponse.body.uri,
+        );
+        const preAuthGrant =
+            credentialOffer.grants?.[
+                "urn:ietf:params:oauth:grant-type:pre-authorized_code"
+            ];
+
+        expect(preAuthGrant?.authorization_server).toBe(
+            credentialOffer.credential_issuer,
+        );
+    });
+
+    test("pre-authorized flow accepts built-in authorization server override", async () => {
+        const offerResponse = await request(app.getHttpServer())
+            .post("/issuer/offer")
+            .trustLocalhost()
+            .set("Authorization", `Bearer ${authToken}`)
+            .send({
+                response_type: "uri",
+                credentialConfigurationIds: ["pid-no-key"],
+                flow: "pre_authorized_code",
+                authorization_server: "built-in",
+            })
+            .expect(201);
+
+        const credentialOffer = await resolveCredentialOffer(
+            offerResponse.body.uri,
+        );
+        const preAuthGrant =
+            credentialOffer.grants?.[
+                "urn:ietf:params:oauth:grant-type:pre-authorized_code"
+            ];
+
+        expect(preAuthGrant?.authorization_server).toBe(
+            credentialOffer.credential_issuer,
+        );
     });
 
     async function getClaims(offerResponse: any): Promise<Record<string, any>> {
