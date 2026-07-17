@@ -284,8 +284,9 @@ jobs:
 
             git -C gh-pages-bootstrap add docs
             git -C gh-pages-bootstrap commit -m "Bootstrap docs prefix from existing mike history" || true
-            git branch -f gh-pages gh-pages-bootstrap
+              bootstrap_head=$(git -C gh-pages-bootstrap rev-parse HEAD)
             git worktree remove gh-pages-bootstrap --force
+              git update-ref refs/heads/gh-pages "$bootstrap_head"
           fi
 
           mike deploy --branch gh-pages --deploy-prefix docs --alias-type copy --update-aliases main latest-dev
