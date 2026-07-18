@@ -306,7 +306,6 @@ jobs:
             if [ -n "$(git -C gh-pages-migrate status --porcelain)" ]; then
               git -C gh-pages-migrate add .
               git -C gh-pages-migrate commit -m "docs: migrate legacy mike versions into docs prefix"
-              git -C gh-pages-migrate push origin gh-pages
             fi
           fi
           git worktree remove gh-pages-migrate --force || true
@@ -1191,7 +1190,6 @@ jobs:
             if [ -n "$(git -C gh-pages-migrate status --porcelain)" ]; then
               git -C gh-pages-migrate add .
               git -C gh-pages-migrate commit -m "docs: migrate legacy mike versions into docs prefix"
-              git -C gh-pages-migrate push origin gh-pages
             fi
           fi
           git worktree remove gh-pages-migrate --force || true
