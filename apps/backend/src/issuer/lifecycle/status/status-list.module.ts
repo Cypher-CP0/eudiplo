@@ -10,6 +10,7 @@ import { StatusListService } from "./status-list.service";
 import { StatusListConfigController } from "./status-list-config.controller";
 import { StatusListConfigService } from "./status-list-config.service";
 import { StatusListManagementController } from "./status-list-management.controller";
+import { SubjectKeyService } from "./subject-key.service";
 
 @Module({
     imports: [
@@ -26,7 +27,7 @@ import { StatusListManagementController } from "./status-list-management.control
         StatusListConfigController,
         StatusListManagementController,
     ],
-    providers: [StatusListService, StatusListConfigService],
-    exports: [StatusListService, StatusListConfigService],
+    providers: [StatusListService, StatusListConfigService, SubjectKeyService],
+    exports: [StatusListService, StatusListConfigService, SubjectKeyService],
 })
 export class StatusListModule {}
