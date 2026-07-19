@@ -23,6 +23,7 @@ import { AttributeProviderEntity } from "../../attribute-provider/entities/attri
 import { KeyAttestationsRequired } from "../../issuance/dto/key-attestations-required.dto";
 import { WebhookEndpointEntity } from "../../webhook-endpoint/entities/webhook-endpoint.entity";
 import { ClaimFieldDefinitionDto } from "../dto/claim-field-definition.dto";
+import { ActiveCredentialPolicy } from "./active-credential-policy.dto";
 import { SchemaMetaConfig } from "../dto/schema-meta-config.dto";
 import {
     IaeAction,
@@ -229,6 +230,26 @@ export class CredentialConfig {
     @Column("boolean", { default: false })
     @IsBoolean()
     statusManagement?: boolean;
+
+    /**
+     * Optional policy limiting how many credentials of this configuration a
+     * single subject may hold active at once. When enabled, issuing a new
+     * credential to a subject invalidates that subject's previously issued
+     * credentials for this configuration.
+     *
+     * Requires `statusManagement` to be enabled, since invalidation relies on
+     * status list entries. Only `internal` tracking is currently supported.
+     */
+    @IsOptional()
+    @ValidateNested()
+    @Type(() => ActiveCredentialPolicy)
+    @ApiPropertyOptional({
+        description:
+            "Policy limiting the number of simultaneously active credentials per subject for this configuration. Requires statusManagement.",
+        type: () => ActiveCredentialPolicy,
+    })
+    @Column("json", { nullable: true })
+    activeCredentials?: ActiveCredentialPolicy | null;
 
     /**
      * List of Interactive Authorization Endpoint (IAE) actions to execute
