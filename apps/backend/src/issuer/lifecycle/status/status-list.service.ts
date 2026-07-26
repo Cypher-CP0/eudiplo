@@ -9,18 +9,18 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
+import { SignatureAlgorithm } from "@owf/cose";
 import {
     BitsPerStatus,
     createHeaderAndPayload,
-    JWTwithStatusListPayload,
     getListFromStatusListJWT,
+    JWTwithStatusListPayload,
     StatusList,
     StatusListCwt,
     StatusListJWTHeaderParameters,
 } from "@owf/token-status-list";
-import { JwtPayload } from "@sd-jwt/core";
-import { SignatureAlgorithm } from "@owf/cose";
 import { X509Certificate } from "@peculiar/x509";
+import { JwtPayload } from "@sd-jwt/core";
 import { decodeJwt } from "jose";
 import { IsNull, Repository } from "typeorm";
 import { v4 } from "uuid";
@@ -34,11 +34,15 @@ import {
     ConfigImportOrchestratorService,
     ImportPhase,
 } from "../../../shared/utils/config-import/config-import-orchestrator.service";
+import type { CredentialConfig } from "../../configuration/credentials/entities/credential.entity";
 import { StatusListImportDto } from "./dto/status-list-import.dto";
 import { StatusUpdateDto } from "./dto/status-update.dto";
 import { StatusListEntity } from "./entities/status-list.entity";
 import { StatusMapping } from "./entities/status-mapping.entity";
 import { StatusListConfigService } from "./status-list-config.service";
+import { SubjectKeyService } from "./subject-key.service";
+
+const STATUS_REVOKED = 1;
 
 @Injectable()
 export class StatusListService {
@@ -58,6 +62,7 @@ export class StatusListService {
         @Inject(forwardRef(() => StatusListConfigService))
         private readonly statusListConfigService: StatusListConfigService,
         readonly configImportOrchestrator: ConfigImportOrchestratorService,
+        private readonly subjectKeyService: SubjectKeyService,
     ) {
         configImportOrchestrator.register(
             "status-lists",
@@ -522,7 +527,25 @@ export class StatusListService {
     async createEntry(
         session: Session,
         credentialConfigurationId: string,
+        credentialConfiguration?: CredentialConfig,
     ): Promise<JWTwithStatusListPayload> {
+        // Determine whether the active-credential-limit policy applies to this
+        // issuance. It applies only when the credential configuration enables
+        // the policy with internal tracking AND a durable subject identity is
+        // available for the session.
+        //
+        // Identity is taken from session.externalIssuer/externalSubject, which
+        // are populated for flows backed by an external authorization server
+        // (where `sub` is a stable per-user identifier). The built-in
+        // authorization server uses a session-scoped `sub` that is not durable
+        // per user, so it does not populate these fields and therefore does not
+        // trigger the policy — it safely no-ops until a durable subject is
+        // available for that flow (tracked as a follow-up).
+        const subjectKey = await this.resolveActiveCredentialSubjectKey(
+            session,
+            credentialConfigurationId,
+            credentialConfiguration,
+        );
         // Find an available list or create a new one
         // If no available list found, create a new shared list
         // (dedicated lists must be created explicitly via the API)
@@ -557,7 +580,27 @@ export class StatusListService {
             index: idx,
             list: uri,
             credentialConfigurationId,
+            subjectKey: subjectKey ?? null,
         });
+
+        // Active-credential-limit enforcement: only AFTER the new credential's
+        // status entry has been successfully created do we invalidate the
+        // subject's previously issued credentials for this configuration.
+        //
+        // This ordering guarantees that a failure during allocation leaves the
+        // existing credentials untouched — we never revoke an old credential
+        // unless a new one has already taken its place. A failure during the
+        // invalidation step (below) leaves the new credential validly issued;
+        // the stale entries simply remain until a later run or manual
+        // revocation, which is the safe direction to fail.
+        if (subjectKey) {
+            await this.invalidatePreviousActiveEntries({
+                tenantId: session.tenantId,
+                credentialConfigurationId,
+                subjectKey,
+                exclude: { statusListId: list.id, index: idx },
+            });
+        }
 
         return {
             status: {
@@ -567,6 +610,91 @@ export class StatusListService {
                 },
             },
         };
+    }
+    /**
+     * Resolve the pseudonymous subject key for the active-credential-limit
+     * policy, or `undefined` if the policy does not apply to this issuance.
+     *
+     * Returns undefined when:
+     * - no credential configuration was provided, or
+     * - the configuration does not enable `activeCredentials`, or
+     * - status management is disabled (invalidation relies on status entries), or
+     * - no durable subject identity is available on the session.
+     */
+    private async resolveActiveCredentialSubjectKey(
+        session: Session,
+        credentialConfigurationId: string,
+        credentialConfiguration?: CredentialConfig,
+    ): Promise<string | undefined> {
+        const policy = credentialConfiguration?.activeCredentials;
+        if (!policy?.enabled) {
+            return undefined;
+        }
+
+        // Only internal tracking is currently supported; external tracking is
+        // reserved for a follow-up and is rejected at config validation, but we
+        // guard here defensively as well.
+        if (policy.tracking && policy.tracking !== "internal") {
+            return undefined;
+        }
+
+        if (!credentialConfiguration?.statusManagement) {
+            this.logger.warn(
+                `activeCredentials policy is enabled for '${credentialConfigurationId}' but statusManagement is disabled; skipping enforcement.`,
+            );
+            return undefined;
+        }
+
+        const iss = session.externalIssuer;
+        const sub = session.externalSubject;
+        if (!iss || !sub) {
+            // No durable subject identity (e.g. built-in AS session-scoped sub).
+            return undefined;
+        }
+
+        return this.subjectKeyService.deriveSubjectKey({
+            tenantId: session.tenantId,
+            credentialConfigurationId,
+            iss,
+            sub,
+        });
+    }
+
+    /**
+     * Invalidate (revoke) the status entries of a subject's previously issued
+     * credentials for a given configuration, excluding the entry just created.
+     *
+     * Looks up all status mappings sharing the same (tenant, credential-config,
+     * subjectKey) and flips each to the revoked status, so at most the current
+     * issuance remains valid.
+     */
+    private async invalidatePreviousActiveEntries(params: {
+        tenantId: string;
+        credentialConfigurationId: string;
+        subjectKey: string;
+        exclude: { statusListId: string; index: number };
+    }): Promise<void> {
+        const priorEntries = await this.statusMappingRepository.findBy({
+            tenantId: params.tenantId,
+            credentialConfigurationId: params.credentialConfigurationId,
+            subjectKey: params.subjectKey,
+        });
+
+        for (const entry of priorEntries) {
+            const isJustCreated =
+                entry.statusListId === params.exclude.statusListId &&
+                entry.index === params.exclude.index;
+            if (isJustCreated) {
+                continue;
+            }
+
+            await this.setEntry(
+                entry.statusListId,
+                entry.index,
+                STATUS_REVOKED,
+                params.tenantId,
+            );
+        }
     }
 
     /**

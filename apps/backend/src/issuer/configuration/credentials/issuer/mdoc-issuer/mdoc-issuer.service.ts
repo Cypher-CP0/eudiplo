@@ -12,9 +12,9 @@ import { exportJWK, importX509 } from "jose";
 import { CertService } from "../../../../../crypto/key/cert/cert.service";
 import { KeyUsageType } from "../../../../../crypto/key/entities/key-chain.entity";
 import { KeyChainService } from "../../../../../crypto/key/key-chain.service";
-import { StatusListService } from "../../../../lifecycle/status/status-list.service";
 import { Session } from "../../../../../session/entities/session.entity";
 import { mdocContext } from "../../../../../verifier/presentations/mdoc-context";
+import { StatusListService } from "../../../../lifecycle/status/status-list.service";
 import { CredentialConfig } from "../../entities/credential.entity";
 import { buildClaimsByNamespace } from "../../utils";
 
@@ -153,6 +153,7 @@ export class MdocIssuerService {
             const statusPayload = await this.statusListService.createEntry(
                 session,
                 credentialConfiguration.id,
+                credentialConfiguration,
             );
             const statusList = statusPayload.status?.status_list;
             if (statusList) {
