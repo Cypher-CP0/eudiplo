@@ -1,11 +1,43 @@
-import { JWK } from "jose";
+import type { TrustListRef } from "../../verifier/presentations/entities/presentation-config.entity";
 
-export type RulebookTrustListRef = {
-    url: string; // e.g. https://.../pid-provider.jwt
-    // material to verify the trustlist JWT (out of scope here)
-    // could be JWK, PEM, kid, etc.
-    verifierKey?: JWK;
-};
+/**
+ * Normalize trust-list input to structured references.
+ * Enforces structured trust-list references with verifier material.
+ */
+export function normalizeTrustListRefs(
+    refs: TrustListRef[] | null | undefined,
+): TrustListRef[] {
+    if (!Array.isArray(refs)) {
+        return [];
+    }
+
+    return refs.flatMap((ref) => {
+        const url = typeof ref.url === "string" ? ref.url.trim() : "";
+        if (url.length === 0) {
+            return [];
+        }
+
+        const hasVerifierKey =
+            !!ref.verifierKey && typeof ref.verifierKey === "object";
+        const hasVerifierX509Der =
+            typeof ref.verifierX509Der === "string" &&
+            ref.verifierX509Der.trim().length > 0;
+
+        if (!hasVerifierKey && !hasVerifierX509Der) {
+            throw new Error(
+                `Trust list reference '${url}' must define verifierKey or verifierX509Der`,
+            );
+        }
+
+        return [
+            {
+                url,
+                verifierKey: ref.verifierKey,
+                verifierX509Der: ref.verifierX509Der?.trim(),
+            },
+        ];
+    });
+}
 
 export type ServiceTypeIdentifier = string;
 
@@ -120,7 +152,7 @@ export type VerifierOptions = {
 };
 
 export type TrustListSource = {
-    lotes: RulebookTrustListRef[];
+    lotes: TrustListRef[];
     // which service types from LoTE you want to accept as issuer identities
     acceptedServiceTypes?: ServiceTypeIdentifier[];
 };

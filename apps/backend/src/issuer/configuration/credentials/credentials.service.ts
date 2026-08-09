@@ -18,6 +18,8 @@ import { ClaimsWebhookResult } from "./dto/claims-webhook-result";
 import {
     CredentialConfig,
     CredentialFormat,
+    CredentialProofType,
+    IssuerMetadataCredentialConfig,
 } from "./entities/credential.entity";
 import { MdocIssuerService } from "./issuer/mdoc-issuer/mdoc-issuer.service";
 import { SdjwtvcIssuerService } from "./issuer/sdjwtvc-issuer/sdjwtvc-issuer.service";
@@ -36,6 +38,11 @@ import { buildClaims, buildClaimsMetadata, buildJsonSchema } from "./utils";
  */
 @Injectable()
 export class CredentialsService {
+    private static readonly DEFAULT_PROOF_TYPES: CredentialProofType[] = [
+        CredentialProofType.ATTESTATION,
+        CredentialProofType.JWT,
+    ];
+
     /**
      * Constructor for CredentialsService.
      * @param configService
@@ -159,6 +166,38 @@ export class CredentialsService {
         }
     }
 
+    private resolveConfiguredProofTypes(
+        config: IssuerMetadataCredentialConfig,
+    ): CredentialProofType[] {
+        const configured = config.proofTypesSupported;
+        if (!Array.isArray(configured) || configured.length === 0) {
+            return [...CredentialsService.DEFAULT_PROOF_TYPES];
+        }
+
+        const supported = new Set(configured);
+        return CredentialsService.DEFAULT_PROOF_TYPES.filter((proofType) =>
+            supported.has(proofType),
+        );
+    }
+
+    async getSupportedProofTypesForCredentialConfig(
+        tenantId: string,
+        credentialConfigurationId: string,
+    ): Promise<CredentialProofType[]> {
+        const config = await this.credentialConfigRepo.findOneBy({
+            id: credentialConfigurationId,
+            tenantId,
+        });
+
+        if (!config) {
+            throw new ConflictException(
+                `Credential configuration '${credentialConfigurationId}' not found`,
+            );
+        }
+
+        return this.resolveConfiguredProofTypes(config.config);
+    }
+
     /**
      * Builds an mDOC credential configuration
      */
@@ -196,15 +235,31 @@ export class CredentialsService {
                 key_attestations_required: { ...keyAttestationsRequired },
             }),
         };
+        const attestationProofType = {
+            proof_signing_alg_values_supported:
+                this.cryptoImplementationService.getAlgs(
+                    CredentialFormat.SD_JWT_VC,
+                ) as string[],
+        };
+
+        const supportedProofTypes = this.resolveConfiguredProofTypes(
+            entity.config,
+        );
+        const proofTypesSupported = {
+            ...(supportedProofTypes.includes(CredentialProofType.ATTESTATION)
+                ? { attestation: attestationProofType }
+                : {}),
+            ...(supportedProofTypes.includes(CredentialProofType.JWT)
+                ? { jwt: jwtProofType }
+                : {}),
+        };
 
         const config = buildMsoMdocConfig(
             doctype,
             {
                 signingAlgorithms: algs,
                 bindingMethods: ["cose_key"],
-                proofTypesSupported: {
-                    jwt: jwtProofType,
-                },
+                proofTypesSupported,
             },
             credentialMetadata,
             entity.config.scope,
@@ -262,15 +317,28 @@ export class CredentialsService {
                 key_attestations_required: { ...keyAttestationsRequired },
             }),
         };
+        const attestationProofType = {
+            proof_signing_alg_values_supported: algs,
+        };
+
+        const supportedProofTypes = this.resolveConfiguredProofTypes(
+            entity.config,
+        );
+        const proofTypesSupported = {
+            ...(supportedProofTypes.includes(CredentialProofType.ATTESTATION)
+                ? { attestation: attestationProofType }
+                : {}),
+            ...(supportedProofTypes.includes(CredentialProofType.JWT)
+                ? { jwt: jwtProofType }
+                : {}),
+        };
 
         const config = buildSdJwtDcConfig(
             vct,
             {
                 signingAlgorithms: algs,
                 bindingMethods: ["jwk"],
-                proofTypesSupported: {
-                    jwt: jwtProofType,
-                },
+                proofTypesSupported,
             },
             credentialMetadata,
             entity.config.scope,

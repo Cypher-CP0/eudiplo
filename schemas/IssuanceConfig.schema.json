@@ -1,9 +1,16 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/openwallet-foundation/eudiplo/refs/heads/main/schemas/IssuanceConfig.schema.json",
+  "$id": "./IssuanceConfig.schema.json",
   "title": "IssuanceConfig",
   "type": "object",
   "properties": {
+    "walletProviderTrustLists": {
+      "description": "Trust lists containing trusted wallet providers.\nEach entry MUST include either `verifierKey` or `verifierX509Der`.",
+      "type": "array",
+      "items": {
+        "$ref": "./WalletProviderTrustListRefDto.schema.json"
+      }
+    },
     "signingKeyId": {
       "type": "string",
       "description": "Key ID for signing access tokens. If unset, the default signing key is used."
@@ -30,10 +37,22 @@
         "discriminator": {
           "propertyName": "type",
           "mapping": {
-            "external": "#/components/schemas/ExternalAuthorizationServerConfig",
-            "oid4vp": "#/components/schemas/Oid4VpAuthorizationServerConfig",
-            "chained": "#/components/schemas/ChainedAuthorizationServerConfig",
-            "built-in": "#/components/schemas/BuiltInAuthorizationServerConfig"
+            "external": "./ExternalAuthorizationServerConfig.schema.json",
+            "oid4vp": "./Oid4VpAuthorizationServerConfig.schema.json",
+            "chained": "./ChainedAuthorizationServerConfig.schema.json",
+            "built-in": "./BuiltInAuthorizationServerConfig.schema.json"
+          }
+        },
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "external",
+              "oid4vp",
+              "chained",
+              "built-in"
+            ]
           }
         }
       }
@@ -104,13 +123,6 @@
     "walletAttestationRequired": {
       "type": "boolean",
       "description": "Indicates whether wallet attestation is required for the token endpoint.\nWhen enabled, wallets must provide OAuth-Client-Attestation headers.\nDefault value is false."
-    },
-    "walletProviderTrustLists": {
-      "description": "URLs of trust lists containing trusted wallet providers.\nThe wallet attestation's X.509 certificate will be validated against these trust lists.\nIf empty and walletAttestationRequired is true, all wallet providers are rejected.",
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
     },
     "display": {
       "type": "array",

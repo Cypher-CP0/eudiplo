@@ -6,6 +6,8 @@ import {
   ReactiveFormsModule,
   Validators,
   FormBuilder,
+  AbstractControl,
+  ValidationErrors,
 } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCheckboxModule } from '@angular/material/checkbox';
@@ -62,6 +64,50 @@ import { RegistrarService } from '../../../registrar/registrar.service';
   styleUrl: './issuance-config-create.component.scss',
 })
 export class IssuanceConfigCreateComponent implements OnInit {
+  private static jsonValidator(control: AbstractControl): ValidationErrors | null {
+    const value = control.value as string;
+    if (!value || !value.trim()) return null;
+    try {
+      JSON.parse(value);
+      return null;
+    } catch {
+      return { invalidJson: true };
+    }
+  }
+
+  private trustListVerifierValidator(control: AbstractControl): ValidationErrors | null {
+    const value = control.value as {
+      verifierKey?: unknown;
+      verifierX509Der?: unknown;
+    };
+
+    const keyStr = value?.verifierKey;
+    const hasVerifierKey = !!keyStr && typeof keyStr === 'string' && keyStr.trim().length > 0;
+    const hasVerifierX509Der =
+      !!value?.verifierX509Der &&
+      typeof value.verifierX509Der === 'string' &&
+      (value.verifierX509Der as string).trim().length > 0;
+
+    return hasVerifierKey || hasVerifierX509Der ? null : { missingVerifier: true };
+  }
+
+  private createWalletProviderTrustListGroup(value?: {
+    url?: string;
+    verifierKey?: string;
+    verifierX509Der?: string;
+  }): FormGroup {
+    return this.fb.group(
+      {
+        url: [value?.url ?? '', [Validators.required]],
+        verifierKey: [value?.verifierKey ?? '', [IssuanceConfigCreateComponent.jsonValidator]],
+        verifierX509Der: [value?.verifierX509Der ?? ''],
+      },
+      {
+        validators: [this.trustListVerifierValidator.bind(this)],
+      }
+    );
+  }
+
   public form: FormGroup;
   public loading = false;
   public availablePresentationConfigIds: string[] = [];
@@ -321,8 +367,23 @@ export class IssuanceConfigCreateComponent implements OnInit {
       const walletTrustListsArray = this.form.get('walletProviderTrustLists') as FormArray;
       walletTrustListsArray.clear();
       if (config.walletProviderTrustLists && Array.isArray(config.walletProviderTrustLists)) {
-        for (const url of config.walletProviderTrustLists) {
-          walletTrustListsArray.push(new FormControl(url, [Validators.required]));
+        for (const entry of config.walletProviderTrustLists as any[]) {
+          if (typeof entry === 'string') {
+            walletTrustListsArray.push(this.createWalletProviderTrustListGroup({ url: entry }));
+            continue;
+          }
+
+          walletTrustListsArray.push(
+            this.createWalletProviderTrustListGroup({
+              url: entry?.url ?? '',
+              verifierKey:
+                entry?.verifierKey && typeof entry.verifierKey === 'object'
+                  ? JSON.stringify(entry.verifierKey, null, 2)
+                  : '',
+              verifierX509Der:
+                typeof entry?.verifierX509Der === 'string' ? entry.verifierX509Der : '',
+            })
+          );
         }
       }
 
@@ -538,6 +599,21 @@ export class IssuanceConfigCreateComponent implements OnInit {
       walletProviderTrustLists:
         formValue.walletProviderTrustLists?.length > 0
           ? formValue.walletProviderTrustLists
+              .map((entry: any) => {
+                // JSON.parse is safe here because the jsonValidator on verifierKey
+                // prevents form submission when the value is not valid JSON.
+                let verifierKey: Record<string, unknown> | undefined;
+                if (typeof entry?.verifierKey === 'string' && entry.verifierKey.trim()) {
+                  verifierKey = JSON.parse(entry.verifierKey) as Record<string, unknown>;
+                }
+
+                return {
+                  url: entry?.url?.trim() || undefined,
+                  verifierKey,
+                  verifierX509Der: entry?.verifierX509Der?.trim() || undefined,
+                };
+              })
+              .filter((entry: any) => !!entry.url)
           : undefined,
       federation: this.buildFederationConfig(formValue.federation) ?? undefined,
       registrationCertificate,
@@ -795,7 +871,7 @@ export class IssuanceConfigCreateComponent implements OnInit {
   }
 
   addWalletProviderTrustList(): void {
-    this.walletProviderTrustLists.push(new FormControl('', [Validators.required]));
+    this.walletProviderTrustLists.push(this.createWalletProviderTrustListGroup());
   }
 
   removeWalletProviderTrustList(index: number): void {

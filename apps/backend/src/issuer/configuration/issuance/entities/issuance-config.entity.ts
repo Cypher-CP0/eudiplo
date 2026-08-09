@@ -7,12 +7,15 @@ import {
 } from "@nestjs/swagger";
 import { Type } from "class-transformer";
 import {
+    IsDefined,
     IsArray,
     IsBoolean,
     ArrayMinSize,
     IsNumber,
+    IsObject,
     IsOptional,
     IsString,
+    ValidateIf,
     ValidateNested,
 } from "class-validator";
 import {
@@ -42,6 +45,32 @@ import {
     IssuerRegistrationCertificateCache,
     IssuerRegistrationCertificateConfig,
 } from "../dto/issuer-registration-certificate.dto";
+
+class WalletProviderTrustListRefDto {
+    @ApiProperty({ format: "uri" })
+    @IsString()
+    url!: string;
+
+    @ApiPropertyOptional({
+        type: "object",
+        additionalProperties: true,
+        description: "JWK used to verify the trust-list JWT signature.",
+    })
+    @ValidateIf((o: WalletProviderTrustListRefDto) => !o.verifierX509Der)
+    @IsDefined()
+    @IsObject()
+    verifierKey?: Record<string, unknown>;
+
+    @ApiPropertyOptional({
+        type: "string",
+        description:
+            "Base64 DER-encoded X.509 certificate used to verify the trust-list JWT signature.",
+    })
+    @ValidateIf((o: WalletProviderTrustListRefDto) => !o.verifierKey)
+    @IsDefined()
+    @IsString()
+    verifierX509Der?: string;
+}
 
 /**
  * Entity to manage issuance configs
@@ -99,14 +128,18 @@ export class IssuanceConfig {
     walletAttestationRequired?: boolean;
 
     /**
-     * URLs of trust lists containing trusted wallet providers.
-     * The wallet attestation's X.509 certificate will be validated against these trust lists.
-     * If empty and walletAttestationRequired is true, all wallet providers are rejected.
+     * Trust lists containing trusted wallet providers.
+     * Each entry MUST include either `verifierKey` or `verifierX509Der`.
      */
+    @ApiPropertyOptional({
+        type: [WalletProviderTrustListRefDto],
+    })
     @IsArray()
+    @ValidateNested({ each: true })
+    @Type(() => WalletProviderTrustListRefDto)
     @IsOptional()
     @Column({ type: "json", nullable: true })
-    walletProviderTrustLists?: string[];
+    walletProviderTrustLists?: WalletProviderTrustListRefDto[];
 
     /**
      * Optional key ID to use for signing access tokens.
