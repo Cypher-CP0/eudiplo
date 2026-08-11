@@ -11,8 +11,7 @@
     "openapi-ts"
   ],
   "ignoreUnresolved": [
-    "tslib",
-    "/usr/bin/codesign"
+    "tslib"
   ],
   "workspaces": {
     ".": {

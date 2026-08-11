@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { INestApplication, ValidationPipe } from "@nestjs/common";
+import { INestApplication } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Test, TestingModule } from "@nestjs/testing";
 import {
@@ -38,6 +38,7 @@ import {
     SignJWT,
 } from "jose";
 import request from "supertest";
+import { createAppValidationPipe } from "../src/shared/common/zod/zod-schema.util";
 import { App } from "supertest/types";
 import { AppModule } from "../src/app.module";
 import { Role } from "../src/auth/roles/role.enum";
@@ -456,7 +457,7 @@ export async function setupIssuanceTestApp(): Promise<IssuanceTestContext> {
     }).compile();
 
     const app = moduleFixture.createNestApplication();
-    app.useGlobalPipes(new ValidationPipe());
+    app.useGlobalPipes(createAppValidationPipe());
 
     const configService = app.get(ConfigService);
     configService.set("CONFIG_IMPORT", false);
@@ -649,12 +650,7 @@ export async function setupPresentationTestApp(): Promise<PresentationTestContex
     }).compile();
 
     const app = moduleFixture.createNestApplication();
-    app.useGlobalPipes(
-        new ValidationPipe({
-            whitelist: true,
-            transform: true,
-        }),
-    );
+    app.useGlobalPipes(createAppValidationPipe());
 
     const configService = app.get(ConfigService);
     const configFolder = resolve(__dirname + "/fixtures");

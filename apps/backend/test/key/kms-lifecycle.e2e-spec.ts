@@ -1,10 +1,11 @@
-import { INestApplication, ValidationPipe } from "@nestjs/common";
+import { INestApplication } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Test, TestingModule } from "@nestjs/testing";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { AppModule } from "../../src/app.module";
 import { KeyChainType } from "../../src/crypto/key/dto/key-chain-create.dto";
+import { createAppValidationPipe } from "../../src/shared/common/zod/zod-schema.util";
 import { getToken } from "../utils";
 
 describe("Key Chain — KMS provider lifecycle (e2e)", () => {
@@ -26,7 +27,7 @@ describe("Key Chain — KMS provider lifecycle (e2e)", () => {
         }).compile();
 
         app = moduleFixture.createNestApplication();
-        app.useGlobalPipes(new ValidationPipe());
+        app.useGlobalPipes(createAppValidationPipe());
         await app.init();
 
         const configService = app.get(ConfigService);
@@ -109,7 +110,7 @@ describe("Key Chain — KMS provider lifecycle (e2e)", () => {
                 await request(app.getHttpServer())
                     .delete(`/key-chain/${keyChainId}`)
                     .set("Authorization", `Bearer ${authToken}`)
-                    .expect(200);
+                    .expect(204);
 
                 // Verify it's gone
                 await request(app.getHttpServer())

@@ -1,8 +1,9 @@
 import { provideHttpClient, withFetch, withInterceptors } from '@angular/common/http';
 import {
-  APP_INITIALIZER,
   type ApplicationConfig,
   importProvidersFrom,
+  inject,
+  provideAppInitializer,
   provideZoneChangeDetection,
 } from '@angular/core';
 import { MAT_FORM_FIELD_DEFAULT_OPTIONS } from '@angular/material/form-field';
@@ -116,7 +117,7 @@ function registerBrowserJsonCompletions() {
       const format = getCredentialFormat(text);
       const insideMeta = isInsideMetaObject(model, position);
 
-      if (!insideMeta && !isCredentialQuerySchema) {
+      if (!insideMeta && !isDcqlSchema) {
         return { suggestions: [] };
       }
 
@@ -166,12 +167,10 @@ function onMonacoLoad() {
 
 export const appConfig: ApplicationConfig = {
   providers: [
-    {
-      provide: APP_INITIALIZER,
-      useFactory: (oidcService: OidcService) => () => oidcService.initialize(),
-      deps: [OidcService],
-      multi: true,
-    },
+    provideAppInitializer(() => {
+      const oidcService = inject(OidcService);
+      return oidcService.initialize();
+    }),
     provideZoneChangeDetection({ eventCoalescing: true }),
     provideRouter(routes),
     importProvidersFrom(FlexLayoutModule),

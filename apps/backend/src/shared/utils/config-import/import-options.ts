@@ -1,6 +1,3 @@
-import { ClassConstructor } from "class-transformer";
-import { ValidationError } from "class-validator";
-
 export interface ImportOptions<T extends object> {
     /**
      * Subfolder within each tenant directory (e.g., "issuance", "keys", "images")
@@ -13,9 +10,15 @@ export interface ImportOptions<T extends object> {
     fileExtension?: string;
 
     /**
-     * Class constructor for validation (if applicable)
+     * Zod schema or Zod DTO class used to validate imported payloads.
      */
-    validationClass?: ClassConstructor<T>;
+    validationSchema?: unknown;
+
+    /**
+     * Backward-compatible alias for validationSchema.
+     * @deprecated Use validationSchema.
+     */
+    validationClass?: unknown;
 
     /**
      * Check if item already exists
@@ -40,7 +43,7 @@ export interface ImportOptions<T extends object> {
     /**
      * Custom validation error formatter
      */
-    formatValidationError?: (error: ValidationError) => any;
+    formatValidationError?: (error: unknown) => any;
 
     /**
      * Resource type name for logging (e.g., "credential config", "key", "image")

@@ -26,7 +26,7 @@ import { IsNull, Repository } from "typeorm";
 import { v4 } from "uuid";
 import { TenantEntity } from "../../../auth/tenant/entitites/tenant.entity";
 import { CertService } from "../../../crypto/key/cert/cert.service";
-import { KeyUsageType } from "../../../crypto/key/entities/key-chain.entity";
+import { KeyUsageType } from "../../../crypto/key/types/key-usage-type";
 import { KeyChainService } from "../../../crypto/key/key-chain.service";
 import { Session } from "../../../session/entities/session.entity";
 import { ConfigImportService } from "../../../shared/utils/config-import/config-import.service";
@@ -35,6 +35,7 @@ import {
     ImportPhase,
 } from "../../../shared/utils/config-import/config-import-orchestrator.service";
 import { StatusListImportDto } from "./dto/status-list-import.dto";
+import { StatusListImportSchema } from "./dto/status-list.schema";
 import { StatusUpdateDto } from "./dto/status-update.dto";
 import { StatusListEntity } from "./entities/status-list.entity";
 import { StatusMapping } from "./entities/status-mapping.entity";
@@ -717,7 +718,7 @@ export class StatusListService {
             {
                 subfolder: "issuance/status-lists",
                 fileExtension: ".json",
-                validationClass: StatusListImportDto,
+                validationSchema: StatusListImportSchema,
                 resourceType: "status list",
                 checkExists: async (tid, data) => {
                     // Check if a list with this ID already exists
