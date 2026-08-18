@@ -2182,6 +2182,11 @@
           "description": "Whether `credential_request_encryption` should be advertised in the credential issuer metadata.",
           "default": false
         },
+        "notificationEndpointEnabled": {
+          "type": "boolean",
+          "description": "Whether the issuer notification endpoint is enabled and advertised in metadata.",
+          "default": true
+        },
         "txCodeMaxAttempts": {
           "type": "number",
           "description": "Maximum failed tx_code attempts before the pre-authorized code is invalidated. Defaults to 5.",
