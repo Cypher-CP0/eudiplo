@@ -130,6 +130,10 @@ register the public API URL:
 
 ```bash
 eudiplo instance add production --url https://eudiplo.example.com
+eudiplo instance ls
+eudiplo instance show production
+eudiplo instance use production
+eudiplo instance remove old-production
 ```
 
 Instance metadata is stored in the user's EUDIPLO CLI config directory, not in
@@ -162,6 +166,29 @@ available.
 HTTP(S) URLs, verifies the default instance points to a configured instance, and
 prints the configured instances. It does not require Docker or contact the
 deployment.
+
+Use `config path` to print the resolved CLI config file and `config show` to
+inspect its validated contents. The JSON form is suitable for scripts:
+
+```bash
+eudiplo config path
+eudiplo config show
+eudiplo config show --json
+```
+
+## Shell Completion
+
+Generate command, option, and enumerated-value completion for the current shell:
+
+```bash
+source <(eudiplo completion bash)
+source <(eudiplo completion zsh)
+eudiplo completion fish | source
+eudiplo completion powershell | Out-String | Invoke-Expression
+```
+
+Persist the generated script in the shell's normal completion directory to load
+it automatically in future sessions.
 
 ## Compose Driver Commands
 
