@@ -4,36 +4,35 @@ import {
     Injectable,
     Logger,
     NotFoundException,
+    ServiceUnavailableException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
+import { SignatureAlgorithm } from "@owf/cose";
 import {
     BitsPerStatus,
     createHeaderAndPayload,
     JWTwithStatusListPayload,
-    getListFromStatusListJWT,
     StatusList,
     StatusListCwt,
     StatusListJWTHeaderParameters,
 } from "@owf/token-status-list";
-import { JwtPayload } from "@sd-jwt/core";
-import { SignatureAlgorithm } from "@owf/cose";
 import { X509Certificate } from "@peculiar/x509";
-import { decodeJwt } from "jose";
-import { IsNull, Repository } from "typeorm";
+import { JwtPayload } from "@sd-jwt/core";
+import { DataSource, IsNull, Repository } from "typeorm";
 import { v4 } from "uuid";
 import { TenantEntity } from "../../auth/tenant/entities/tenant.entity";
 import { CertService } from "../../crypto/key/cert/cert.service";
-import { KeyUsageType } from "../../crypto/key/types/key-usage-type";
 import { KeyChainService } from "../../crypto/key/key-chain.service";
-import { Session } from "../../session/entities/session.entity";
+import { KeyUsageType } from "../../crypto/key/types/key-usage-type";
 import { ConfigImportService } from "../../platform/config-import/config-import.service";
 import {
     ConfigImportOrchestratorService,
     ImportPhase,
 } from "../../platform/config-import/config-import-orchestrator.service";
-import { StatusListImportDto } from "./dto/status-list-import.dto";
+import { Session } from "../../session/entities/session.entity";
 import { StatusListImportSchema } from "./dto/status-list.schema";
+import { StatusListImportDto } from "./dto/status-list-import.dto";
 import { StatusUpdateDto } from "./dto/status-update.dto";
 import { StatusListEntity } from "./entities/status-list.entity";
 import { StatusMapping } from "./entities/status-mapping.entity";
@@ -42,11 +41,14 @@ import { StatusListConfigService } from "./status-list-config.service";
 @Injectable()
 export class StatusListService {
     private readonly logger = new Logger(StatusListService.name);
+    private readonly maxRetries = 3;
+    private readonly retryDelayMs = 100;
 
     constructor(
         private readonly configService: ConfigService,
         private readonly certService: CertService,
         public readonly keyChainService: KeyChainService,
+        private readonly dataSource: DataSource,
         @InjectRepository(StatusMapping)
         private readonly statusMappingRepository: Repository<StatusMapping>,
         @InjectRepository(StatusListEntity)
@@ -193,8 +195,7 @@ export class StatusListService {
             bits,
         });
 
-        await this.createListJWT(entry);
-        return entry;
+        return this.regenerateListTokens(entry.tenantId, entry.id);
     }
 
     /**
@@ -204,8 +205,10 @@ export class StatusListService {
      * - `exp`: When the token expires (RECOMMENDED)
      * - `ttl`: How long verifiers can cache before fetching fresh copy (RECOMMENDED)
      * - `aggregation_uri`: URI to fetch all status list URIs (OPTIONAL, per RFC Section 9)
+     *
+     * Uses optimistic locking to prevent stale token values from overwriting newer state.
      */
-    async createListJWT(entry: StatusListEntity): Promise<void> {
+    async createListJWT(entry: StatusListEntity): Promise<boolean> {
         // Get TTL from tenant config or global default
         const effectiveConfig =
             await this.statusListConfigService.getEffectiveConfig(
@@ -271,11 +274,55 @@ export class StatusListService {
             },
         );
 
-        // Store JWT/CWT and expiration time
+        // Only cache tokens if the entity still matches the snapshot that was signed.
         const expiresAt = new Date(exp * 1000);
-        await this.statusListRepository.update(
-            { id: entry.id, tenantId: entry.tenantId },
-            { jwt, cwt: Buffer.from(cwt).toString("base64url"), expiresAt },
+        const updateResult = await this.statusListRepository.update(
+            {
+                id: entry.id,
+                tenantId: entry.tenantId,
+                version: entry.version,
+            },
+            {
+                jwt,
+                cwt: Buffer.from(cwt).toString("base64url"),
+                expiresAt,
+                version: () => "version + 1",
+            },
+        );
+
+        if (updateResult.affected === 0) {
+            // Version mismatch - entry was modified concurrently
+            // Log but don't fail - JWT regeneration will be retried on next request
+            this.logger.warn(
+                `Stale JWT generation for list ${entry.id} (tenant: ${entry.tenantId}) - version changed concurrently`,
+            );
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Generate tokens from the latest status-list snapshot, retrying when the
+     * list changes while the asynchronous signing operation is in progress.
+     */
+    private async regenerateListTokens(
+        tenantId: string,
+        listId: string,
+    ): Promise<StatusListEntity> {
+        for (let attempt = 0; attempt < this.maxRetries; attempt++) {
+            const entry = await this.getListById(tenantId, listId);
+            if (await this.createListJWT(entry)) {
+                return this.getListById(tenantId, listId);
+            }
+
+            if (attempt < this.maxRetries - 1) {
+                await this.delay(this.retryDelayMs * Math.pow(2, attempt));
+            }
+        }
+
+        throw new ServiceUnavailableException(
+            `Could not generate current tokens for status list ${listId}`,
         );
     }
 
@@ -380,9 +427,7 @@ export class StatusListService {
             !list.jwt || !list.expiresAt || list.expiresAt <= new Date();
 
         if (needsRegeneration) {
-            await this.createListJWT(list);
-            // Reload to get the updated JWT
-            list = await this.getListById(tenantId, listId);
+            list = await this.regenerateListTokens(tenantId, listId);
         }
 
         return list.jwt!;
@@ -396,52 +441,13 @@ export class StatusListService {
         let list = await this.getListById(tenantId, listId);
 
         const needsRegeneration =
-            !list.jwt || !list.expiresAt || list.expiresAt <= new Date();
+            !list.jwt ||
+            !list.cwt ||
+            !list.expiresAt ||
+            list.expiresAt <= new Date();
 
         if (needsRegeneration) {
-            await this.createListJWT(list);
-            list = await this.getListById(tenantId, listId);
-        }
-
-        if (!list.cwt) {
-            const jwt = list.jwt!;
-            const jwtPayload = decodeJwt(jwt);
-            const statusList = getListFromStatusListJWT(jwt);
-            const cert = await this.getSigningCert(list);
-
-            const subject =
-                typeof jwtPayload.sub === "string"
-                    ? jwtPayload.sub
-                    : this.buildStatusListUri(tenantId, listId);
-            const issuedAt =
-                typeof jwtPayload.iat === "number"
-                    ? new Date(jwtPayload.iat * 1000)
-                    : new Date();
-            const expirationTime =
-                typeof jwtPayload.exp === "number"
-                    ? new Date(jwtPayload.exp * 1000)
-                    : undefined;
-            const ttl =
-                typeof jwtPayload.ttl === "number" ? jwtPayload.ttl : undefined;
-
-            const cwt = await this.signStatusListCwt(
-                tenantId,
-                cert.keyId,
-                cert.crt,
-                {
-                    subject,
-                    issuedAt,
-                    expirationTime,
-                    ttl,
-                    statusList,
-                },
-            );
-
-            await this.statusListRepository.update(
-                { id: list.id, tenantId: list.tenantId },
-                { cwt: Buffer.from(cwt).toString("base64url") },
-            );
-            list = await this.getListById(tenantId, listId);
+            list = await this.regenerateListTokens(tenantId, listId);
         }
 
         return Uint8Array.from(Buffer.from(list.cwt!, "base64url"));
@@ -513,6 +519,7 @@ export class StatusListService {
     /**
      * Get the next free entry in the status list.
      * Automatically creates a new list if no available list is found.
+     * Uses atomic batch allocation to prevent race conditions.
      * @param session The session for which to create the entry.
      * @param credentialConfigurationId The credential configuration ID.
      * @returns The status list payload to include in the credential.
@@ -521,56 +528,237 @@ export class StatusListService {
         session: Session,
         credentialConfigurationId: string,
     ): Promise<JWTwithStatusListPayload> {
-        // Find an available list or create a new one
-        // If no available list found, create a new shared list
-        // (dedicated lists must be created explicitly via the API)
-        const list =
-            (await this.findAvailableList(
-                session.tenantId,
-                credentialConfigurationId,
-            )) ?? (await this.createNewList(session.tenantId));
+        for (let attempt = 0; attempt < this.maxRetries; attempt++) {
+            try {
+                const result = await this.allocateEntries({
+                    tenantId: session.tenantId,
+                    sessionId: session.id,
+                    credentialConfigurationId,
+                    count: 1,
+                });
 
-        // Pop an index from the stack
-        const idx = list.stack.pop();
-        if (idx === undefined) {
-            // This shouldn't happen since we just checked, but handle it gracefully
-            throw new ConflictException(
-                "No free entries available in any status list",
-            );
+                if (result.length === 0) {
+                    throw new ConflictException(
+                        "Failed to allocate status entry after retries",
+                    );
+                }
+
+                const entry = result[0];
+                return {
+                    status: {
+                        status_list: {
+                            idx: entry.index,
+                            uri: entry.uri,
+                        },
+                    },
+                };
+            } catch (error) {
+                if (this.isRetryableConcurrencyError(error)) {
+                    if (attempt < this.maxRetries - 1) {
+                        await this.delay(
+                            this.retryDelayMs * Math.pow(2, attempt),
+                        );
+                        continue;
+                    }
+                    break;
+                }
+                throw error;
+            }
         }
 
-        // Save the updated stack
-        await this.statusListRepository.update(
-            { id: list.id },
-            { stack: list.stack },
+        throw new ServiceUnavailableException(
+            "Could not allocate status entry after maximum retries",
         );
+    }
 
-        const uri = this.buildStatusListUri(session.tenantId, list.id);
+    /**
+     * Allocate one or more status list entries atomically.
+     * All entries for a single credential are allocated in one transaction,
+     * ensuring consistency and preventing partial allocations.
+     *
+     * @param options Allocation request parameters
+     * @returns Array of allocated entries
+     */
+    private async allocateEntries(options: {
+        tenantId: string;
+        sessionId: string;
+        credentialConfigurationId: string;
+        count: number;
+    }): Promise<Array<{ statusListId: string; index: number; uri: string }>> {
+        const queryRunner = this.dataSource.createQueryRunner();
+        let shouldCreateList = false;
 
-        // Store the index in the status mapping
-        await this.statusMappingRepository.save({
-            tenantId: session.tenantId,
-            sessionId: session.id,
-            statusListId: list.id,
-            index: idx,
-            list: uri,
-            credentialConfigurationId,
-        });
+        try {
+            await queryRunner.connect();
+            await queryRunner.startTransaction();
 
-        return {
-            status: {
-                status_list: {
-                    idx,
-                    uri,
+            // Find an available status list
+            const manager = queryRunner.manager;
+            const dedicatedLists = await manager.find(StatusListEntity, {
+                where: {
+                    tenantId: options.tenantId,
+                    credentialConfigurationId:
+                        options.credentialConfigurationId,
                 },
-            },
+                order: { createdAt: "ASC" },
+            });
+            let list = dedicatedLists.find(
+                (candidate) => candidate.stack.length >= options.count,
+            );
+
+            if (!list) {
+                // Try to find a shared list
+                const sharedLists = await manager.find(StatusListEntity, {
+                    where: {
+                        tenantId: options.tenantId,
+                        credentialConfigurationId: IsNull(),
+                    },
+                    order: { createdAt: "ASC" },
+                });
+
+                for (const candidateList of sharedLists) {
+                    if (candidateList.stack.length >= options.count) {
+                        list = candidateList;
+                        break;
+                    }
+                }
+            }
+
+            // If still no list found, create a new one
+            if (!list || list.stack.length < options.count) {
+                await queryRunner.commitTransaction();
+                shouldCreateList = true;
+            } else {
+                // Allocate indices from the stack
+                const allocatedIndices: number[] = [];
+                for (let i = 0; i < options.count; i++) {
+                    const idx = list.stack.pop();
+                    if (idx === undefined) {
+                        throw new ConflictException(
+                            "Stack underflow during allocation",
+                        );
+                    }
+                    allocatedIndices.push(idx);
+                }
+
+                // The version predicate makes this update portable across
+                // PostgreSQL and SQLite without relying on driver-specific locks.
+                const updateResult = await manager.update(
+                    StatusListEntity,
+                    {
+                        id: list.id,
+                        tenantId: options.tenantId,
+                        version: list.version,
+                    },
+                    {
+                        stack: list.stack,
+                        version: () => "version + 1",
+                    },
+                );
+
+                if (updateResult.affected === 0) {
+                    throw new ConflictException(
+                        "Status list was modified concurrently",
+                    );
+                }
+
+                const uri = this.buildStatusListUri(options.tenantId, list.id);
+                const mappings = allocatedIndices.map((index) => ({
+                    tenantId: options.tenantId,
+                    sessionId: options.sessionId,
+                    statusListId: list.id,
+                    index,
+                    list: uri,
+                    credentialConfigurationId:
+                        options.credentialConfigurationId,
+                }));
+
+                await manager.insert(StatusMapping, mappings);
+                await queryRunner.commitTransaction();
+
+                return allocatedIndices.map((index) => ({
+                    statusListId: list.id,
+                    index,
+                    uri,
+                }));
+            }
+        } catch (error) {
+            if (queryRunner.isTransactionActive) {
+                await queryRunner.rollbackTransaction();
+            }
+
+            if (this.isRetryableConcurrencyError(error)) {
+                throw new ConflictException(
+                    "Status list index allocation conflict - please retry",
+                );
+            }
+
+            throw error;
+        } finally {
+            await queryRunner.release();
+        }
+
+        if (shouldCreateList) {
+            const newList = await this.createNewList(options.tenantId);
+            if (newList.stack.length < options.count) {
+                throw new ConflictException(
+                    "Status list capacity is smaller than the requested allocation",
+                );
+            }
+            return this.allocateEntries(options);
+        }
+
+        throw new ConflictException("No status list available for allocation");
+    }
+
+    /**
+     * Helper function to introduce a delay for retry logic.
+     */
+    private delay(ms: number): Promise<void> {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    private isRetryableConcurrencyError(error: unknown): boolean {
+        if (error instanceof ConflictException) {
+            return true;
+        }
+
+        if (!(error instanceof Error)) {
+            return false;
+        }
+
+        const databaseError = error as Error & {
+            code?: string;
+            driverError?: { code?: string };
         };
+        const code = databaseError.driverError?.code ?? databaseError.code;
+        if (
+            code &&
+            [
+                "23505",
+                "40001",
+                "40P01",
+                "SQLITE_BUSY",
+                "SQLITE_BUSY_SNAPSHOT",
+                "SQLITE_LOCKED",
+            ].includes(code)
+        ) {
+            return true;
+        }
+
+        const message = error.message.toLowerCase();
+        return (
+            message.includes("version") ||
+            message.includes("unique constraint") ||
+            message.includes("database is locked")
+        );
     }
 
     /**
      * Update the value of an entry in a specific status list.
+     * Uses optimistic locking to ensure atomic updates and prevent lost writes.
      * JWT regeneration depends on the tenant's `immediateUpdate` setting:
-     * - If true: JWT is regenerated immediately
+     * - If true: JWT is regenerated immediately (after transaction commits)
      * - If false (default): JWT is only regenerated on next request when TTL expires
      * @param listId The ID of the status list.
      * @param index The index in the status list.
@@ -583,18 +771,99 @@ export class StatusListService {
         value: number,
         tenantId: string,
     ): Promise<void> {
-        const entry = await this.getListById(tenantId, listId);
-        entry.elements[index] = value;
-        await this.statusListRepository.update(
-            { id: listId },
-            { elements: entry.elements },
-        );
+        for (let attempt = 0; attempt < this.maxRetries; attempt++) {
+            try {
+                await this.setEntryWithRetry(listId, index, value, tenantId);
+                return;
+            } catch (error) {
+                if (this.isRetryableConcurrencyError(error)) {
+                    if (attempt < this.maxRetries - 1) {
+                        await this.delay(
+                            this.retryDelayMs * Math.pow(2, attempt),
+                        );
+                        continue;
+                    }
+                    break;
+                }
+                throw error;
+            }
+        }
 
-        // Check if immediate JWT regeneration is enabled
-        const effectiveConfig =
-            await this.statusListConfigService.getEffectiveConfig(tenantId);
-        if (effectiveConfig.immediateUpdate) {
-            await this.createListJWT(entry);
+        throw new ServiceUnavailableException(
+            "Could not update status entry after maximum retries",
+        );
+    }
+
+    /**
+     * Internal method that performs a single attempt to update an entry.
+     */
+    private async setEntryWithRetry(
+        listId: string,
+        index: number,
+        value: number,
+        tenantId: string,
+    ): Promise<void> {
+        const queryRunner = this.dataSource.createQueryRunner();
+        let updateCommitted = false;
+
+        try {
+            await queryRunner.connect();
+            await queryRunner.startTransaction();
+
+            const manager = queryRunner.manager;
+
+            const entry = await manager.findOne(StatusListEntity, {
+                where: { id: listId, tenantId },
+            });
+
+            if (!entry) {
+                throw new NotFoundException(
+                    `Status list ${listId} not found for tenant ${tenantId}`,
+                );
+            }
+
+            // Modify the elements array
+            const updatedElements = [...entry.elements];
+            updatedElements[index] = value;
+
+            // Perform atomic update with version check
+            const updateResult = await manager.update(
+                StatusListEntity,
+                {
+                    id: listId,
+                    tenantId,
+                    version: entry.version,
+                },
+                {
+                    elements: updatedElements,
+                    version: () => "version + 1",
+                },
+            );
+
+            if (updateResult.affected === 0) {
+                // Version mismatch - another transaction modified the list
+                throw new ConflictException(
+                    "Status list version changed concurrently",
+                );
+            }
+
+            await queryRunner.commitTransaction();
+            updateCommitted = true;
+        } catch (error) {
+            if (queryRunner.isTransactionActive) {
+                await queryRunner.rollbackTransaction();
+            }
+            throw error;
+        } finally {
+            await queryRunner.release();
+        }
+
+        if (updateCommitted) {
+            const effectiveConfig =
+                await this.statusListConfigService.getEffectiveConfig(tenantId);
+            if (effectiveConfig.immediateUpdate) {
+                await this.regenerateListTokens(tenantId, listId);
+            }
         }
     }
 
@@ -698,9 +967,7 @@ export class StatusListService {
 
         // Regenerate JWT if the certificate changed
         if (needsJwtRegeneration) {
-            await this.createListJWT(savedList);
-            // Reload to get the updated JWT
-            return this.getListById(tenantId, listId);
+            return this.regenerateListTokens(tenantId, listId);
         }
 
         return savedList;
@@ -794,7 +1061,6 @@ export class StatusListService {
             bits,
         });
 
-        // Generate the JWT
-        await this.createListJWT(entry);
+        await this.regenerateListTokens(entry.tenantId, entry.id);
     }
 }
