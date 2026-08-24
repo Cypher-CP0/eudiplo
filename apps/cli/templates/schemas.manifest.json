@@ -32,6 +32,7 @@
   "StatusListConfig.schema.json",
   "StatusListConfigFile.schema.json",
   "StatusListImportDto.schema.json",
+  "TenantConfigFile.schema.json",
   "TransactionData.schema.json",
   "TrustListConfigFile.schema.json",
   "TrustListCreateDto.schema.json",
