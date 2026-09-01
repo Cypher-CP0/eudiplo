@@ -1,4 +1,5 @@
 import "reflect-metadata";
+import { randomUUID } from "node:crypto";
 import { ConfigService } from "@nestjs/config";
 import { DataSource } from "typeorm";
 import { beforeEach, describe, expect, test, vi } from "vitest";
@@ -28,7 +29,7 @@ const TOKEN_B = "token-b";
 
 function makeSession(overrides: Record<string, unknown> = {}) {
     return {
-        id: `session-${Math.random().toString(36).slice(2)}`,
+        id: `session-${randomUUID()}`,
         tenantId: TENANT,
         externalIssuer: "https://as.example.com",
         externalSubject: "user-123",
