@@ -1,6 +1,7 @@
 {
     "name": "@eudiplo/backend",
     "version": "0.0.1",
+    "type": "module",
     "description": "a middleware to interact with the EUDI Wallet",
     "author": "Mirko Mollik <mirkomollik@gmail.com>",
     "license": "Apache-2.0",
@@ -12,7 +13,7 @@
         "url": "https://github.com/openwallet-foundation/eudiplo/issues"
     },
     "engines": {
-        "node": ">=22.12.0",
+        "node": ">=22.22.3",
         "pnpm": ">=8.0.0"
     },
     "scripts": {
@@ -22,7 +23,7 @@
         "start": "nest start",
         "dev": "nest start --watch",
         "start:debug": "nest start --debug --watch",
-        "start:prod": "node dist/main",
+        "start:prod": "node dist/main.js",
         "lint": "biome lint",
         "lint:fix": "biome check --fix --unsafe",
         "test": "vitest run",

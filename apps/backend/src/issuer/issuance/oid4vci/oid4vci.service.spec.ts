@@ -1,7 +1,7 @@
 import type { AuthorizationServerMetadata } from "@openid4vc/oauth2";
 import { of, throwError } from "rxjs";
 import { describe, expect, it, vi } from "vitest";
-import { Oid4vciService } from "./oid4vci.service";
+import { Oid4vciService } from "./oid4vci.service.js";
 
 describe("Oid4vciService internal JWKS resolution", () => {
     it("uses INTERNAL_URL only for the built-in authorization server", () => {
@@ -84,9 +84,15 @@ describe("Oid4vciService authorization server metadata caching & deduplication",
         );
 
         const [m1, m2, m3] = await Promise.all([
-            service["fetchAuthorizationServerMetadata"]("https://as.example.org"),
-            service["fetchAuthorizationServerMetadata"]("https://as.example.org"),
-            service["fetchAuthorizationServerMetadata"]("https://as.example.org"),
+            service["fetchAuthorizationServerMetadata"](
+                "https://as.example.org",
+            ),
+            service["fetchAuthorizationServerMetadata"](
+                "https://as.example.org",
+            ),
+            service["fetchAuthorizationServerMetadata"](
+                "https://as.example.org",
+            ),
         ]);
 
         expect(m1.issuer).toBe("https://as.example.org");
@@ -128,10 +134,14 @@ describe("Oid4vciService authorization server metadata caching & deduplication",
         );
 
         // First fetch -> populates cache
-        await service["fetchAuthorizationServerMetadata"]("https://as.example.org");
+        await service["fetchAuthorizationServerMetadata"](
+            "https://as.example.org",
+        );
 
         // Force item in cache to be expired
-        const cachedItem = service["asMetadataCache"].get("https://as.example.org");
+        const cachedItem = service["asMetadataCache"].get(
+            "https://as.example.org",
+        );
         cachedItem.expiresAt = Date.now() - 1000;
 
         // Second fetch -> fresh fetch fails, fallback to stale metadata

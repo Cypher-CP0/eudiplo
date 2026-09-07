@@ -14,14 +14,14 @@ import { MetricService, TraceService } from "nestjs-otel";
 import { firstValueFrom } from "rxjs";
 import { LessThan, Repository } from "typeorm";
 import { v4 } from "uuid";
-import { KeyChainService } from "../../../../../crypto/key/key-chain.service";
-import { SessionService } from "../../../../../session/session.service";
-import { FederationTrustService } from "../../../../../trust/federation-trust.service";
-import { FederationTrustSource } from "../../../../../trust/types";
-import { WalletAttestationService } from "../../../../../trust/wallet-attestation.service";
-import { AuthorizationIdentity } from "../../../../configuration/credentials/dto/authorization-identity";
-import type { ChainedAsConfig } from "../../../../configuration/issuance/dto/chained-as-config.dto";
-import { IssuanceService } from "../../../../configuration/issuance/issuance.service";
+import { KeyChainService } from "../../../../../crypto/key/key-chain.service.js";
+import { SessionService } from "../../../../../session/session.service.js";
+import { FederationTrustService } from "../../../../../trust/federation-trust.service.js";
+import { FederationTrustSource } from "../../../../../trust/types.js";
+import { WalletAttestationService } from "../../../../../trust/wallet-attestation.service.js";
+import { AuthorizationIdentity } from "../../../../configuration/credentials/dto/authorization-identity.js";
+import type { ChainedAsConfig } from "../../../../configuration/issuance/dto/chained-as-config.dto.js";
+import { IssuanceService } from "../../../../configuration/issuance/issuance.service.js";
 import {
     assertTokenRequestSessionValid,
     buildAuthorizationServerMetadata,
@@ -37,7 +37,7 @@ import {
     issueRefreshTokenIfEnabled,
     resolveSessionForTokenRequest,
     resolveTokenBinding,
-} from "../shared";
+} from "../shared/index.js";
 
 /**
  * Upstream OIDC discovery document structure.
@@ -112,19 +112,31 @@ export class ChainedAsService {
     ) {
         this.discoveryHitsCounter = this.metricService?.getCounter(
             "chained_as_discovery_cache_hits_total",
-            { description: "Total hits on Chained AS upstream discovery cache" },
+            {
+                description:
+                    "Total hits on Chained AS upstream discovery cache",
+            },
         );
         this.discoveryMissesCounter = this.metricService?.getCounter(
             "chained_as_discovery_cache_misses_total",
-            { description: "Total misses on Chained AS upstream discovery cache" },
+            {
+                description:
+                    "Total misses on Chained AS upstream discovery cache",
+            },
         );
         this.discoveryStaleCounter = this.metricService?.getCounter(
             "chained_as_discovery_cache_stale_total",
-            { description: "Total stale hits on Chained AS upstream discovery cache" },
+            {
+                description:
+                    "Total stale hits on Chained AS upstream discovery cache",
+            },
         );
         this.discoveryFetchesCounter = this.metricService?.getCounter(
             "chained_as_discovery_fetches_total",
-            { description: "Total outbound Chained AS upstream discovery fetches" },
+            {
+                description:
+                    "Total outbound Chained AS upstream discovery fetches",
+            },
         );
     }
 

@@ -2,8 +2,8 @@ import { HttpService } from "@nestjs/axios";
 import type { MetricService } from "nestjs-otel";
 import { of, throwError } from "rxjs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { FederationTrustService } from "./federation-trust.service";
-import type { FederationTrustSource } from "./types";
+import { FederationTrustService } from "./federation-trust.service.js";
+import type { FederationTrustSource } from "./types.js";
 
 describe("FederationTrustService caching & deduplication", () => {
     let service: FederationTrustService;
@@ -125,7 +125,9 @@ describe("FederationTrustService caching & deduplication", () => {
         );
 
         // Expire the primary cache item artificially
-        const cacheKey = "https://entity.example.org::" + JSON.stringify(trustSource.trustAnchors);
+        const cacheKey =
+            "https://entity.example.org::" +
+            JSON.stringify(trustSource.trustAnchors);
         const internalCache = (service as any).trustCache.get(cacheKey);
         internalCache.expiresAt = Date.now() - 1000;
 

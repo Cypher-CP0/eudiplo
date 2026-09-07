@@ -4,7 +4,7 @@ import { Injectable, Logger, Optional } from "@nestjs/common";
 import { decodeJwt } from "jose";
 import { MetricService } from "nestjs-otel";
 import { firstValueFrom } from "rxjs";
-import { FederationTrustMode, FederationTrustSource } from "./types";
+import { FederationTrustMode, FederationTrustSource } from "./types.js";
 
 type FederationTrustEvaluation = {
     trusted: boolean;
@@ -230,7 +230,9 @@ export class FederationTrustService {
                 ),
             );
 
-            const hintMatch = [...anchorIds].some((anchor) => hints.has(anchor));
+            const hintMatch = [...anchorIds].some((anchor) =>
+                hints.has(anchor),
+            );
             const subjectMatches =
                 !entityConfig.sub ||
                 entityConfig.sub.replace(/\/$/, "") === normalizedEntityId;
