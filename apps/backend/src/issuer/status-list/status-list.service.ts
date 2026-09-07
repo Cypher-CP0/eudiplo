@@ -829,10 +829,16 @@ export class StatusListService {
     private async allocateEntries(
         options: EntryAllocationOptions,
     ): Promise<AllocatedStatusEntry[]> {
-        const { entries, shouldCreateList } = await this.runSerialized(() =>
-            this.allocateEntriesTransaction(options),
+        return this.runSerialized(() =>
+            this.allocateEntriesSerialized(options),
         );
+    }
 
+    private async allocateEntriesSerialized(
+        options: EntryAllocationOptions,
+    ): Promise<AllocatedStatusEntry[]> {
+        const { entries, shouldCreateList } =
+            await this.allocateEntriesTransaction(options);
         if (entries) {
             return entries;
         }
@@ -986,7 +992,15 @@ export class StatusListService {
                 "Status list capacity is smaller than the requested allocation",
             );
         }
-        return this.allocateEntries(options);
+
+        const { entries } = await this.allocateEntriesTransaction(options);
+        if (!entries) {
+            throw new ConflictException(
+                "No status list available after creating a new list",
+            );
+        }
+
+        return entries;
     }
 
     private async retryOnConcurrency<T>(

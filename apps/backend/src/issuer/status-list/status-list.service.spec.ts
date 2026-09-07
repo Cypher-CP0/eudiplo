@@ -33,6 +33,12 @@ describe("StatusListService SQLite concurrency", () => {
                 if (key === "PUBLIC_URL") {
                     return "https://issuer.example";
                 }
+                if (key === "STATUS_CAPACITY") {
+                    return 4;
+                }
+                if (key === "STATUS_BITS") {
+                    return 1;
+                }
                 throw new Error(`Unexpected config key: ${key}`);
             }),
         } as unknown as ConfigService;
@@ -183,34 +189,105 @@ describe("StatusListService SQLite concurrency", () => {
         expect(mappings).toHaveLength(3);
     });
 
+    test("allocates concurrently when a new list must be created", async () => {
+        Object.assign(service as object, {
+            statusListConfigService: {
+                getEffectiveConfig: vi.fn().mockResolvedValue({
+                    ttl: 300,
+                    enableAggregation: false,
+                }),
+            },
+            certService: {
+                find: vi.fn().mockResolvedValue({
+                    keyId: "status-list-key",
+                    crt: [],
+                }),
+                getLeafCertBase64: vi.fn().mockReturnValue(["certificate"]),
+            },
+            keyChainService: {
+                signJWT: vi.fn().mockResolvedValue("jwt"),
+            },
+            signStatusListCwt: vi.fn().mockResolvedValue(Uint8Array.of(1)),
+        });
+        await dataSource
+            .getRepository(StatusListEntity)
+            .update({ id: "list-1", tenantId: "tenant-1" }, { stack: [] });
+
+        const results = await Promise.all([
+            service.createEntry(
+                { id: "session-a", tenantId: "tenant-1" } as never,
+                "config-1",
+            ),
+            service.createEntry(
+                { id: "session-b", tenantId: "tenant-1" } as never,
+                "config-1",
+            ),
+        ]);
+
+        const indices = results.map((result) => result.status.status_list.idx);
+        expect(new Set(indices).size).toBe(2);
+
+        const lists = await dataSource
+            .getRepository(StatusListEntity)
+            .findBy({ tenantId: "tenant-1" });
+        expect(lists).toHaveLength(2);
+    });
+
     test("concurrent status updates to different indices are both kept", async () => {
         await dataSource
             .getRepository(StatusListEntity)
             .update(
                 { id: "list-1", tenantId: "tenant-1" },
-                { elements: [0, 0, 0, 0], stack: [0, 1, 2, 3] },
+                { elements: [0, 0, 0, 0], stack: [2, 3] },
             );
+        await dataSource.getRepository(StatusMapping).insert([
+            {
+                tenantId: "tenant-1",
+                sessionId: "x",
+                statusListId: "list-1",
+                index: 0,
+                list: "https://issuer.example/issuers/tenant-1/status-management/status-list/list-1",
+                credentialConfigurationId: "config-1",
+            },
+            {
+                tenantId: "tenant-1",
+                sessionId: "y",
+                statusListId: "list-1",
+                index: 1,
+                list: "https://issuer.example/issuers/tenant-1/status-management/status-list/list-1",
+                credentialConfigurationId: "config-1",
+            },
+        ]);
+        Object.assign(service as object, {
+            statusListConfigService: {
+                getEffectiveConfig: vi.fn().mockResolvedValue({
+                    immediateUpdate: false,
+                }),
+            },
+        });
 
         await Promise.all([
-            service
-                .updateStatus(
-                    { sessionId: "x", status: 1 } as never,
-                    "tenant-1",
-                )
-                .catch(() => undefined),
-            service
-                .updateStatus(
-                    { sessionId: "y", status: 1 } as never,
-                    "tenant-1",
-                )
-                .catch(() => undefined),
+            service.updateStatus(
+                {
+                    sessionId: "x",
+                    credentialConfigurationId: "config-1",
+                    status: 1,
+                } as never,
+                "tenant-1",
+            ),
+            service.updateStatus(
+                {
+                    sessionId: "y",
+                    credentialConfigurationId: "config-1",
+                    status: 1,
+                } as never,
+                "tenant-1",
+            ),
         ]);
 
-        // The point is that concurrent update paths do not throw a driver-level
-        // transaction error; missing sessions simply update nothing.
         const list = await dataSource
             .getRepository(StatusListEntity)
             .findOneByOrFail({ id: "list-1", tenantId: "tenant-1" });
-        expect(list.elements).toHaveLength(4);
+        expect(list.elements).toEqual([1, 1, 0, 0]);
     });
 });
