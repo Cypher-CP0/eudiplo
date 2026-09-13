@@ -266,6 +266,29 @@ eudiplo doctor --instance production
 Add `--read-only` for an instance you want to inspect but never modify, such as
 a production cluster you hold credentials for but do not operate.
 
+### Inspecting and Restarting Workloads
+
+```bash
+# Pods in the namespace
+eudiplo ps --instance production
+
+# Logs for one workload
+eudiplo logs --instance production --service backend --follow --tail 100
+
+# Restart one workload
+eudiplo restart --instance production --service backend
+```
+
+`logs` and `restart` act on a single workload, so they need `--service` when
+more than one is configured; they refuse to guess rather than picking the first.
+`ps` reports the whole namespace and takes no `--service`.
+
+`restart` prints the workload, namespace and context before it does anything,
+performs a `kubectl rollout restart`, and then waits for the rollout to finish
+so the command does not return before the replacement pods are up. Pass
+`--no-wait` to return as soon as the restart is requested. An instance
+registered with `--read-only` refuses the command outright.
+
 ### Required Permissions
 
 `eudiplo doctor` asks the API server what your credentials may do, using
