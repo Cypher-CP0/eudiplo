@@ -86,6 +86,18 @@ describe("kubectl argument construction", () => {
         ]);
     });
 
+    it("waits on the same workload it restarted", () => {
+        expect(buildRolloutStatusArgs(scope, "deployment/eudiplo")).toEqual([
+            "rollout",
+            "status",
+            "deployment/eudiplo",
+            "--context",
+            "production",
+            "--namespace",
+            "eudiplo",
+        ]);
+    });
+
     it("restarts through rollout rather than deleting pods", () => {
         const args = buildRestartArgs(scope, "deployment/eudiplo");
 

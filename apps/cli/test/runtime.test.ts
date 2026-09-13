@@ -45,6 +45,16 @@ describe("EUDIPLO CLI", () => {
         expect(logs.output.stdout).toContain("--tail <lines>");
     });
 
+    it("guards restart behind workload selection and read-only", async () => {
+        const { context, output } = await createContext();
+
+        expect(await runCli(["restart", "--help"], context)).toBe(0);
+        expect(output.stdout).toContain("Usage: eudiplo restart [options]");
+        expect(output.stdout).toContain("--service <name>");
+        expect(output.stdout).toContain("--no-wait");
+        expect(output.stdout).not.toContain("--follow");
+    });
+
     it("treats -h like global help", async () => {
         const { context, output } = await createContext();
 

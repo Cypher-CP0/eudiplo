@@ -20,6 +20,8 @@ import type { KubernetesScope } from "./kubectl.js";
 import {
     buildCanIArgs,
     buildLogsArgs,
+    buildRestartArgs,
+    buildRolloutStatusArgs,
     resolveWorkload,
     buildGetEndpointSlicesArgs,
     buildGetPodsArgs,
@@ -114,8 +116,44 @@ export const drivers: Record<DeploymentTarget, DeploymentDriver> = {
                 options,
             );
         },
+        async restart(options) {
+            assertWritable(options);
+            const scope = resolveScope(options.instance, options.instanceName);
+            const workload = resolveWorkload(
+                options.instance,
+                readServiceFlag(options.flags),
+            );
+
+            // Name the target before changing anything: the whole risk of this
+            // command is restarting the right workload in the wrong cluster.
+            options.context.stdout.write(
+                `Restarting ${workload} in namespace ${scope.namespace} on context ${scope.context}\n`,
+            );
+
+            const restarted = await runKubectl(
+                [...buildRestartArgs(scope, workload), ...options.args],
+                options,
+            );
+            if (restarted !== 0 || options.flags.wait === false) {
+                return restarted;
+            }
+            return runKubectl(buildRolloutStatusArgs(scope, workload), options);
+        },
     },
 };
+
+/**
+ * A read-only instance is registered by someone who holds credentials for a
+ * cluster they do not operate, so a mutation is refused outright rather than
+ * attempted and left to fail on permissions.
+ */
+function assertWritable({ instance, instanceName }: DriverCommandOptions): void {
+    if (instance.readOnly === true) {
+        throw new Error(
+            `Instance ${instanceName} is registered read-only. Re-register it without --read-only to allow changes.`,
+        );
+    }
+}
 
 function readServiceFlag(
     flags: Record<string, string | boolean>,
