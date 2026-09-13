@@ -14,6 +14,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  config-schemas:
+    name: Check Config Schemas and Website
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - uses: pnpm/action-setup@v5
+        with:
+          run_install: false
+      - name: Install dependencies for contract generation
+        run: pnpm install --frozen-lockfile
+      - name: Check current DTOs against published config contracts
+        run: pnpm schemas:check-contract
+      - name: Check shared config implementation and bundled snapshots
+        run: node scripts/sync-config-format.mjs --check
+      - name: Prevent changes to existing published schema versions
+        env:
+          SCHEMA_BASE_REVISION: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'HEAD' }}
+        run: |
+          if [ "$SCHEMA_BASE_REVISION" = "0000000000000000000000000000000000000000" ]; then SCHEMA_BASE_REVISION=HEAD; fi
+          node scripts/check-published-schemas.mjs "$SCHEMA_BASE_REVISION"
+      - name: Build website and verify published schema references
+        run: node scripts/build-website.mjs
+
   lint:
     permissions:
       contents: read
@@ -47,11 +77,11 @@ jobs:
 
       - name: Run license check (backend, production)
         working-directory: apps/backend
-        run: pnpm dlx license-checker --production --onlyAllow "MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;0BSD;ISC;OFL-1.1"
+        run: pnpm dlx license-checker --production --excludePrivatePackages --onlyAllow "MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;0BSD;ISC;OFL-1.1"
 
       - name: Run license check (client, production)
         working-directory: apps/client
-        run: pnpm dlx license-checker --production --onlyAllow "MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;0BSD;ISC;OFL-1.1"
+        run: pnpm dlx license-checker --production --excludePrivatePackages --onlyAllow "MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;0BSD;ISC;OFL-1.1"
 
       - name: Run knip
         run: pnpm knip --no-progress
@@ -102,6 +132,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build config format
+        run: pnpm --filter @eudiplo/config-format build
+
       - name: Build CLI
         run: pnpm --filter @eudiplo/cli build
 
@@ -135,6 +168,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Build config format
+        run: pnpm --filter @eudiplo/config-format build
 
       - name: Build backend
         run: pnpm --filter @eudiplo/backend build
@@ -214,6 +250,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build config format
+        run: pnpm --filter @eudiplo/config-format build
+
       - name: Build documentation
         env:
           ALGOLIA_APP_ID: ${{ secrets.ALGOLIA_APP_ID }}
@@ -251,6 +290,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Build config format
+        run: pnpm --filter @eudiplo/config-format build
 
       - name: Build generated docs content
         env:
@@ -311,6 +353,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build config format
+        run: pnpm --filter @eudiplo/config-format build
+
       - name: setup test webhooks
         run: |
           nohup pnpm --filter test-rp dev &
@@ -345,6 +390,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Build config format
+        run: pnpm --filter @eudiplo/config-format build
 
       - name: setup test webhooks
         run: |
@@ -391,6 +439,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Build config format
+        run: pnpm --filter @eudiplo/config-format build
 
       - name: setup test webhooks
         run: |

@@ -1,47 +1,17 @@
-export const CONFIG_RESOURCE_KINDS = [
-    "Tenant",
-    "Client",
-    "KmsConfig",
-    "KeyChain",
-    "RegistrarConfig",
-    "IssuanceConfig",
-    "CredentialConfig",
-    "PresentationConfig",
-    "AttributeProvider",
-    "WebhookEndpoint",
-    "TrustList",
-    "StatusList",
-] as const;
-
-export type ConfigResourceKind = (typeof CONFIG_RESOURCE_KINDS)[number];
+import type {
+    ConfigDocument,
+    ConfigMigrationIssue,
+    ConfigResourceKind,
+} from "@eudiplo/config-format/config-format.js";
+export { CONFIG_RESOURCE_KINDS } from "@eudiplo/config-format/config-format.js";
+export type {
+    ConfigFile,
+    ConfigDocument,
+    ConfigMigrationIssue,
+    ConfigResourceKind,
+} from "@eudiplo/config-format/config-format.js";
 export type ConfigOwnership = "unmanaged" | "file-managed";
-export type ConfigImportMode = "create" | "upsert" | "replace";
-
-interface ConfigDocumentMetadata {
-    id: string;
-    generation?: number;
-    ownership?: ConfigOwnership;
-}
-
-export interface ConfigDocument<T = Record<string, unknown>> {
-    apiVersion: string;
-    kind: ConfigResourceKind;
-    metadata: ConfigDocumentMetadata;
-    spec: T;
-}
-
-type ConfigIssueSeverity = "warning" | "required-input" | "error";
-
-export interface ConfigMigrationIssue {
-    severity: ConfigIssueSeverity;
-    code: string;
-    path: string;
-    message: string;
-    resource?: {
-        kind: ConfigResourceKind;
-        id: string;
-    };
-}
+export type ConfigImportMode = "disabled" | "create" | "upsert" | "replace";
 
 export interface ConfigMigrationResult<T = Record<string, unknown>> {
     document: ConfigDocument<T>;
@@ -49,57 +19,18 @@ export interface ConfigMigrationResult<T = Record<string, unknown>> {
     migrations: string[];
 }
 
-interface ConfigBundleResource {
-    kind: ConfigResourceKind;
-    id: string;
-    apiVersion: string;
-    path: string;
-    sha256: string;
-    ownership: ConfigOwnership;
-    generation: number;
-}
-
-export interface ConfigBundleRequirement {
-    code: string;
-    resource: { kind: ConfigResourceKind; id: string };
-    path: string;
-    message: string;
-    placeholder?: string;
-}
-
-export interface ConfigBundleAsset {
-    path: string;
-    contentType?: string;
-    sha256: string;
-    data: string;
-}
-
-interface ConfigBundleManifest {
-    format: "eudiplo.config-bundle";
-    formatVersion: 1;
-    sourceVersion: string;
-    exportedAt: string;
-    tenant: string;
-    resources: ConfigBundleResource[];
-    assets: Array<{
-        path: string;
-        contentType?: string;
-        sha256: string;
-    }>;
-    requirements: ConfigBundleRequirement[];
-    warnings: ConfigMigrationIssue[];
-}
-
-export interface ConfigBundle {
-    manifest: ConfigBundleManifest;
-    documents: ConfigDocument[];
-    assets: ConfigBundleAsset[];
-}
+export type {
+    ConfigBundle,
+    ConfigBundleAsset,
+    ConfigBundleRequirement,
+} from "@eudiplo/config-format/config-bundle.js";
 
 export interface ConfigImportPlanItem {
     kind: ConfigResourceKind;
     id: string;
-    action: "create" | "update" | "skip" | "delete" | "blocked";
+    action: "create" | "update" | "unchanged" | "skip" | "delete" | "blocked";
+    changes?: import("@eudiplo/config-format/config-values.js").ConfigChange[];
+    metadataChanged?: boolean;
     sourceVersion: string;
     targetVersion: string;
     migrations: string[];
@@ -112,10 +43,34 @@ export interface ConfigImportPlan {
     applicable: boolean;
     items: ConfigImportPlanItem[];
     issues: ConfigMigrationIssue[];
+    planFingerprint?: string;
+    operationId?: string;
+    assets?: Array<{
+        path: string;
+        action: "create" | "update" | "unchanged" | "skip";
+        currentHash?: string;
+        currentContentType?: string;
+        sha256: string;
+    }>;
     generatedSecrets?: Array<{
         kind: "Client";
         id: string;
         path: "/spec/secret";
         value: string;
     }>;
+}
+
+/** Ordered recovery journal. A failed operation can have partial effects. */
+export interface ConfigApplyOperation {
+    stage:
+        | "asset"
+        | "resource"
+        | "ownership"
+        | "resource-and-ownership"
+        | "delete"
+        | "delete-ownership";
+    kind?: ConfigResourceKind;
+    id?: string;
+    path?: string;
+    status: "pending" | "running" | "completed" | "failed";
 }

@@ -55,17 +55,12 @@ import { DEVICE_JWK, mdocContext } from "./utils-mdoc.js";
 
 export function readConfig<T>(path: string): T {
     const input = JSON.parse(readFileSync(path, "utf-8"));
-    if (
-        typeof input?.apiVersion !== "string" ||
-        typeof input?.kind !== "string" ||
-        !input.spec ||
-        typeof input.spec !== "object"
-    ) {
+    if (!input.spec || typeof input.spec !== "object") {
         return input as T;
     }
 
     const spec = structuredClone(input.spec);
-    if (input.kind === "KeyChain" && spec.keySource?.type === "private-jwk") {
+    if (spec.keySource?.type === "private-jwk") {
         spec.key = spec.keySource.jwk;
         delete spec.keySource;
     }
