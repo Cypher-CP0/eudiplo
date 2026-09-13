@@ -37,6 +37,7 @@ export interface DriverCommandOptions {
     instanceName: string;
     instance: InstanceConfig;
     args: string[];
+    flags: Record<string, string | boolean>;
     context: CommandContext;
 }
 
@@ -57,6 +58,7 @@ export interface DeploymentDriver {
     up?(options: DriverCommandOptions): Promise<number>;
     down?(options: DriverCommandOptions): Promise<number>;
     logs?(options: DriverCommandOptions): Promise<number>;
+    ps?(options: DriverCommandOptions): Promise<number>;
 }
 
 export interface ParsedArgs {

@@ -19,6 +19,8 @@ import {
 import type { KubernetesScope } from "./kubectl.js";
 import {
     buildCanIArgs,
+    buildLogsArgs,
+    resolveWorkload,
     buildGetEndpointSlicesArgs,
     buildGetPodsArgs,
     buildGetWorkloadArgs,
@@ -91,8 +93,66 @@ export const drivers: Record<DeploymentTarget, DeploymentDriver> = {
     kubernetes: {
         target: "kubernetes",
         diagnostics: kubernetesDiagnostics,
+        async logs(options) {
+            const scope = resolveScope(options.instance, options.instanceName);
+            const workload = resolveWorkload(
+                options.instance,
+                readServiceFlag(options.flags),
+            );
+            return runKubectl(
+                [
+                    ...buildLogsArgs(scope, workload, readLogOptions(options.flags)),
+                    ...options.args,
+                ],
+                options,
+            );
+        },
+        async ps(options) {
+            const scope = resolveScope(options.instance, options.instanceName);
+            return runKubectl(
+                [...buildGetPodsArgs(scope), ...options.args],
+                options,
+            );
+        },
     },
 };
+
+function readServiceFlag(
+    flags: Record<string, string | boolean>,
+): string | undefined {
+    const value = flags.service;
+    return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function readLogOptions(flags: Record<string, string | boolean>): {
+    follow?: boolean;
+    tail?: number;
+} {
+    const tail = typeof flags.tail === "string" ? Number(flags.tail) : undefined;
+    if (tail !== undefined && !Number.isInteger(tail)) {
+        throw new Error("--tail must be a whole number of lines.");
+    }
+    return { follow: flags.follow === true, tail };
+}
+
+async function runKubectl(
+    args: string[],
+    { context }: DriverCommandOptions,
+): Promise<number> {
+    const kubectl = await resolveKubectl(context.env);
+    if (!kubectl) {
+        throw new Error("kubectl was not found on PATH.");
+    }
+    return new Promise((resolveProcess, rejectProcess) => {
+        const child = spawn(kubectl, args, {
+            cwd: context.cwd,
+            env: context.env,
+            stdio: "inherit",
+        });
+        child.on("error", rejectProcess);
+        child.on("close", (code) => resolveProcess(code ?? 1));
+    });
+}
 
 async function kubernetesDiagnostics(
     instance: InstanceConfig,

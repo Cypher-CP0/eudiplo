@@ -29,6 +29,22 @@ describe("EUDIPLO CLI", () => {
         expect(output.stdout).toContain("For more information");
     });
 
+    it("registers ps and offers workload selection on logs", async () => {
+        const { context, output } = await createContext();
+
+        expect(await runCli(["ps", "--help"], context)).toBe(0);
+        expect(output.stdout).toContain("Usage: eudiplo ps [options]");
+        expect(output.stdout).toContain("--instance <name>");
+        // ps reports the whole deployment, so it takes no workload selector.
+        expect(output.stdout).not.toContain("--service <name>");
+
+        const logs = await createContext();
+        expect(await runCli(["logs", "--help"], logs.context)).toBe(0);
+        expect(logs.output.stdout).toContain("--service <name>");
+        expect(logs.output.stdout).toContain("--follow");
+        expect(logs.output.stdout).toContain("--tail <lines>");
+    });
+
     it("treats -h like global help", async () => {
         const { context, output } = await createContext();
 
