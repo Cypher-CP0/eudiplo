@@ -69,3 +69,4 @@ writeFileSync(
 );
 
 console.log("CLI assets synchronized from canonical sources.");
+
