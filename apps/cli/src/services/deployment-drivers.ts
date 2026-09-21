@@ -16,6 +16,16 @@ import {
     defaultEnvFileName,
     hasFiles,
 } from "./compose-project.js";
+import {
+    assertKnownService,
+    assertServiceName,
+    buildComposeBaseArgs,
+    buildComposeListServicesArgs,
+    buildComposeLogsArgs,
+    buildComposePsArgs,
+    buildComposeRestartArgs,
+    parseServiceList,
+} from "./compose-args.js";
 import type { KubernetesScope } from "./kubectl.js";
 import {
     buildCanIArgs,
@@ -82,8 +92,38 @@ export const drivers: Record<DeploymentTarget, DeploymentDriver> = {
         down(options) {
             return runCompose(["down", ...options.args], options);
         },
-        logs(options) {
-            return runCompose(["logs", "-f", ...options.args], options);
+        async logs(options) {
+            const service = await resolveComposeService(options);
+            const { follow, tail } = readLogOptions(options.flags);
+            const since =
+                typeof options.flags.since === "string"
+                    ? options.flags.since
+                    : undefined;
+            return runCompose(
+                [
+                    ...buildComposeLogsArgs(service, { follow, tail, since }),
+                    ...options.args,
+                ],
+                options,
+            );
+        },
+        async ps(options) {
+            return runCompose(
+                [...buildComposePsArgs(), ...options.args],
+                options,
+            );
+        },
+        async restart(options) {
+            assertWritable(options);
+            const service = await resolveComposeService(options);
+            const restartArgs = buildComposeRestartArgs(service);
+            const runtime = await resolveComposeRuntime(options.context.env);
+            // Name the target before changing anything, as the Kubernetes
+            // driver does, including which runtime will carry it out.
+            options.context.stdout.write(
+                `Restarting ${service ?? "all services"} of ${options.instanceName}${runtime ? ` with ${runtime.name} compose` : ""}\n`,
+            );
+            return runCompose([...restartArgs, ...options.args], options);
         },
     },
     external: {
@@ -103,7 +143,11 @@ export const drivers: Record<DeploymentTarget, DeploymentDriver> = {
             );
             return runKubectl(
                 [
-                    ...buildLogsArgs(scope, workload, readLogOptions(options.flags)),
+                    ...buildLogsArgs(
+                        scope,
+                        workload,
+                        readLogOptions(options.flags),
+                    ),
                     ...options.args,
                 ],
                 options,
@@ -147,7 +191,10 @@ export const drivers: Record<DeploymentTarget, DeploymentDriver> = {
  * cluster they do not operate, so a mutation is refused outright rather than
  * attempted and left to fail on permissions.
  */
-function assertWritable({ instance, instanceName }: DriverCommandOptions): void {
+function assertWritable({
+    instance,
+    instanceName,
+}: DriverCommandOptions): void {
     if (instance.readOnly === true) {
         throw new Error(
             `Instance ${instanceName} is registered read-only. Re-register it without --read-only to allow changes.`,
@@ -166,7 +213,8 @@ function readLogOptions(flags: Record<string, string | boolean>): {
     follow?: boolean;
     tail?: number;
 } {
-    const tail = typeof flags.tail === "string" ? Number(flags.tail) : undefined;
+    const tail =
+        typeof flags.tail === "string" ? Number(flags.tail) : undefined;
     if (tail !== undefined && !Number.isInteger(tail)) {
         throw new Error("--tail must be a whole number of lines.");
     }
@@ -438,7 +486,10 @@ export function unreadyEndpoints(stdout: string): string[] {
                 (!isRecord(endpoint.conditions) ||
                     endpoint.conditions.ready !== false),
         );
-        readyByService.set(service, (readyByService.get(service) ?? false) || ready);
+        readyByService.set(
+            service,
+            (readyByService.get(service) ?? false) || ready,
+        );
     }
 
     return [...readyByService.entries()]
@@ -698,23 +749,14 @@ async function runCompose(
     { instance, context }: DriverCommandOptions,
 ): Promise<number> {
     const projectDirectory = instance.projectDirectory ?? context.cwd;
-    const composeArgs = ["compose"];
-    if (instance.envFile) {
-        composeArgs.push(
-            "--env-file",
-            resolve(projectDirectory, instance.envFile),
-        );
-    }
-    for (const composeFile of getComposeFiles(instance)) {
-        composeArgs.push("-f", resolve(projectDirectory, composeFile));
-    }
-    for (const profile of instance.composeProfiles ?? []) {
-        composeArgs.push("--profile", profile);
-    }
-    if (instance.projectName) {
-        composeArgs.push("--project-name", instance.projectName);
-    }
-    composeArgs.push(...args);
+    const composeArgs = [
+        ...buildComposeBaseArgs(
+            instance,
+            projectDirectory,
+            getComposeFiles(instance),
+        ),
+        ...args,
+    ];
 
     const composeRuntime = await resolveComposeRuntime(context.env);
     if (!composeRuntime) {
@@ -737,6 +779,78 @@ async function runCompose(
         });
         child.on("close", (code) => resolveProcess(code ?? 1));
     });
+}
+
+/**
+ * Runs Compose with captured output. Used for read-only queries whose
+ * result the CLI needs, such as the service list.
+ */
+async function captureCompose(
+    args: string[],
+    { instance, context }: DriverCommandOptions,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+    const projectDirectory = instance.projectDirectory ?? context.cwd;
+    const composeRuntime = await resolveComposeRuntime(context.env);
+    if (!composeRuntime) {
+        throw new Error(
+            "Docker or Podman was not found in a supported install location.",
+        );
+    }
+    const composeArgs = [
+        ...buildComposeBaseArgs(
+            instance,
+            projectDirectory,
+            getComposeFiles(instance),
+        ),
+        ...args,
+    ];
+    return new Promise((resolveProcess) => {
+        const child = spawn(composeRuntime.command, composeArgs, {
+            cwd: projectDirectory,
+            env: context.env,
+            stdio: ["ignore", "pipe", "pipe"],
+        });
+        let stdout = "";
+        let stderr = "";
+        child.stdout?.on("data", (chunk) => {
+            stdout += String(chunk);
+        });
+        child.stderr?.on("data", (chunk) => {
+            stderr += String(chunk);
+        });
+        child.on("error", (error) =>
+            resolveProcess({ code: 1, stdout, stderr: error.message }),
+        );
+        child.on("close", (code) =>
+            resolveProcess({ code: code ?? 1, stdout, stderr }),
+        );
+    });
+}
+
+/**
+ * Validates `--service` against the services Compose actually defines for
+ * this instance, so a typo fails with the list of real names instead of a
+ * runtime error.
+ */
+async function resolveComposeService(
+    options: DriverCommandOptions,
+): Promise<string | undefined> {
+    const service = readServiceFlag(options.flags);
+    if (service === undefined) {
+        return undefined;
+    }
+    assertServiceName(service);
+    const listed = await captureCompose(
+        buildComposeListServicesArgs(),
+        options,
+    );
+    if (listed.code !== 0) {
+        throw new Error(
+            `Could not list Compose services: ${listed.stderr.trim() || `exit code ${listed.code}`}`,
+        );
+    }
+    assertKnownService(service, parseServiceList(listed.stdout));
+    return service;
 }
 
 export async function resolveComposeRuntime(
@@ -836,10 +950,7 @@ function runtimePathCandidates(
  * Generic PATH lookup, including the Windows PATHEXT extensions, for
  * executables that have no well-known install location.
  */
-function executableCandidates(
-    name: string,
-    env: NodeJS.ProcessEnv,
-): string[] {
+function executableCandidates(name: string, env: NodeJS.ProcessEnv): string[] {
     const pathEntries = (env.PATH ?? "").split(delimiter).filter(Boolean);
     if (process.platform !== "win32") {
         return pathEntries.map((entry) => join(entry, name));

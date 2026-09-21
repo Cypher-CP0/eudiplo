@@ -90,7 +90,9 @@ eudiplo init --target compose --demo --image-tag main
 eudiplo init --target compose --no-client
 eudiplo up
 eudiplo down
-eudiplo logs
+eudiplo ps
+eudiplo logs --service eudiplo --follow --tail 100 --since 10m
+eudiplo restart --service eudiplo-client
 eudiplo demo --reset --force
 ```
 

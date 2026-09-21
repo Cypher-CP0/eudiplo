@@ -188,9 +188,13 @@ eudiplo init --preset standard --public-url https://eudiplo.example.com
 eudiplo init --preset standard --demo-tenant
 eudiplo up
 eudiplo down
-eudiplo logs
+eudiplo ps
+eudiplo logs --service eudiplo --follow --tail 100 --since 10m
+eudiplo restart --service eudiplo-client
 eudiplo demo --reset --force
 ```
+
+`ps`, `logs`, and `restart` work the same with Docker Compose and Podman Compose. `--service` must name a service defined in the project, `logs` prints and exits unless `--follow` is passed, and `restart` is refused for read-only instances.
 
 When run in an interactive terminal, `init` opens a wizard for the project directory, deployment preset, database, storage, key management, public URL, authentication client, web client, and whether to start immediately. The generated environment file is created with owner-only permissions. Leaving the authentication secret empty generates a random secret.
 

@@ -212,7 +212,11 @@ eudiplo init --preset standard --demo-tenant
 # Manage containers
 eudiplo up       # Start services
 eudiplo down     # Stop services
-eudiplo logs     # View logs
+eudiplo ps       # List containers and their state
+eudiplo logs     # Print recent logs
+eudiplo logs --service eudiplo --follow --tail 100 --since 10m
+eudiplo restart --service eudiplo-client
+eudiplo restart  # Restart every service in the project
 
 # Reset demo
 eudiplo demo --reset --force
@@ -256,6 +260,14 @@ eudiplo init --preset standard \
 
 :::warning[Secret Security]
 Avoid exposing secrets in shared shell history when using `--auth-client-secret` in automation.
+:::
+
+**Lifecycle commands:**
+
+`ps`, `logs`, and `restart` run through whichever Compose runtime the CLI selected, so they behave the same with `docker compose` and `podman compose`. `--service` is checked against the services the project defines (`compose config --services`) before anything runs, and `--since` accepts a duration such as `10m` or `2h30m`, or a timestamp such as `2026-09-01T12:00:00Z`. `logs` prints and exits unless `--follow` is passed. `restart` is refused for instances registered with `--read-only`.
+
+:::note[Podman]
+`podman compose` delegates to an external provider (`docker-compose` or `podman-compose`). Flag support depends on that provider, so keep it up to date.
 :::
 
 ### Tenant Configuration Commands

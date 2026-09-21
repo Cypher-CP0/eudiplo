@@ -14,10 +14,7 @@ const descriptions: Record<DriverCommand, string> = {
 };
 
 // Commands that act on a single workload rather than the whole deployment.
-const serviceScoped: ReadonlySet<DriverCommand> = new Set([
-    "logs",
-    "restart",
-]);
+const serviceScoped: ReadonlySet<DriverCommand> = new Set(["logs", "restart"]);
 
 export function createDeploymentCommands(
     context: CommandContext,
@@ -34,30 +31,34 @@ export function createDeploymentCommands(
         if (serviceScoped.has(name)) {
             command.option(
                 "--service <name>",
-                "select a configured workload (Kubernetes instances)",
+                "select a single service (Compose) or configured workload (Kubernetes)",
             );
         }
         if (name === "logs") {
             command
                 .option("--follow", "stream new output as it arrives")
-                .option("--tail <lines>", "number of recent lines to show");
+                .option("--tail <lines>", "number of recent lines to show")
+                .option(
+                    "--since <time>",
+                    "show logs since a duration (10m, 2h) or timestamp (Compose instances)",
+                );
         }
         if (name === "restart") {
             command.option(
                 "--no-wait",
-                "return without waiting for the rollout to finish",
+                "return without waiting for the rollout to finish (Kubernetes instances)",
             );
         }
         return command.action(async (args, options) => {
-                const { config } = await loadCliState(context);
-                setExitCode(
-                    await runDriverCommand(
-                        config,
-                        name,
-                        parsedArgs(name, undefined, args, options),
-                        context,
-                    ),
-                );
+            const { config } = await loadCliState(context);
+            setExitCode(
+                await runDriverCommand(
+                    config,
+                    name,
+                    parsedArgs(name, undefined, args, options),
+                    context,
+                ),
+            );
         });
     });
 }
