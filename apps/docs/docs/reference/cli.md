@@ -155,6 +155,11 @@ eudiplo doctor --instance production
 # Check deployment status
 eudiplo status --instance production
 
+# Open the web client (or the API docs) in a browser
+eudiplo open --instance production
+eudiplo open --docs
+eudiplo open --print   # print the URL only
+
 # Validate local configuration
 eudiplo config validate
 
@@ -169,6 +174,7 @@ eudiplo version     # CLI version + update check
 **What they do:**
 
 - `doctor` — Checks public URL, API reachability, `/health`, optional client connectivity, and authentication env vars
+- `open` — Opens the instance's web client, or the management API docs with `--docs`. When no browser is available (SSH, containers, CI, non-interactive shells) it prints the URL instead. Inside WSL it uses `wslview` when installed, and `$BROWSER` is honoured when set to a plain command
 - `config validate` — Parses local CLI config, validates instance targets and HTTP(S) URLs
 - `config path` — Prints the resolved CLI config file path
 - `config show` — Inspects validated config contents (use `--json` for scripts)

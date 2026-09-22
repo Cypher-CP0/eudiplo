@@ -138,6 +138,7 @@ These commands work with both `compose` and `external` instances and do not requ
 ```bash
 eudiplo doctor --instance production
 eudiplo status --instance production
+eudiplo open --instance production
 eudiplo config validate
 eudiplo config editor setup
 eudiplo --version
