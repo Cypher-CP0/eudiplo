@@ -178,7 +178,7 @@ export const drivers: Record<DeploymentTarget, DeploymentDriver> = {
                 [...buildRestartArgs(scope, workload), ...options.args],
                 options,
             );
-            if (restarted !== 0 || options.flags.wait === false) {
+            if (restarted !== 0 || options.flags["no-wait"] === true) {
                 return restarted;
             }
             return runKubectl(buildRolloutStatusArgs(scope, workload), options);
