@@ -155,6 +155,11 @@ eudiplo doctor --instance production
 # Check deployment status
 eudiplo status --instance production
 
+# Open the web client (or the API docs) in a browser
+eudiplo open --instance production
+eudiplo open --docs
+eudiplo open --print   # print the URL only
+
 # Validate local configuration
 eudiplo config validate
 
@@ -169,6 +174,7 @@ eudiplo version     # CLI version + update check
 **What they do:**
 
 - `doctor` — Checks public URL, API reachability, `/health`, optional client connectivity, and authentication env vars
+- `open` — Opens the instance's web client, or the management API docs with `--docs`. When no browser is available (SSH, containers, CI, non-interactive shells) it prints the URL instead. Inside WSL it uses `wslview` when installed, and `$BROWSER` is honoured when set to a plain command
 - `config validate` — Parses local CLI config, validates instance targets and HTTP(S) URLs
 - `config path` — Prints the resolved CLI config file path
 - `config show` — Inspects validated config contents (use `--json` for scripts)
@@ -212,7 +218,11 @@ eudiplo init --preset standard --demo-tenant
 # Manage containers
 eudiplo up       # Start services
 eudiplo down     # Stop services
-eudiplo logs     # View logs
+eudiplo ps       # List containers and their state
+eudiplo logs     # Print recent logs
+eudiplo logs --service eudiplo --follow --tail 100 --since 10m
+eudiplo restart --service eudiplo-client
+eudiplo restart  # Restart every service in the project
 
 # Reset demo
 eudiplo demo --reset --force
@@ -256,6 +266,14 @@ eudiplo init --preset standard \
 
 :::warning[Secret Security]
 Avoid exposing secrets in shared shell history when using `--auth-client-secret` in automation.
+:::
+
+**Lifecycle commands:**
+
+`ps`, `logs`, and `restart` run through whichever Compose runtime the CLI selected, so they behave the same with `docker compose` and `podman compose`. `--service` is checked against the services the project defines (`compose config --services`) before anything runs, and `--since` accepts a duration such as `10m` or `2h30m`, or a timestamp such as `2026-09-01T12:00:00Z`. `logs` prints and exits unless `--follow` is passed. `restart` is refused for instances registered with `--read-only`.
+
+:::note[Podman]
+`podman compose` delegates to an external provider (`docker-compose` or `podman-compose`). Flag support depends on that provider, so keep it up to date.
 :::
 
 ### Tenant Configuration Commands
