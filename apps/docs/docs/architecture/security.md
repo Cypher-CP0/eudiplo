@@ -460,13 +460,13 @@ The HTTP request logger skips the management API (`/api`), `/health` and `/metri
 
 EUDIPLO does not enforce HTTPS for incoming requests; run it behind a reverse proxy that terminates TLS, and set `PUBLIC_URL` to the HTTPS URL. Wallets and the EUDI protocols expect HTTPS for all issuer and verifier endpoints.
 
-For **outgoing** requests to tenant-configured URLs (webhook endpoints, attribute providers and issuer metadata fetched during presentation verification), EUDIPLO applies an outbound URL policy that protects against SSRF:
+For **outgoing** requests to tenant-configured URLs (webhook endpoints, attribute providers and issuer metadata fetched during presentation verification), EUDIPLO applies an outbound URL policy that protects against SSRF. HTTP targets and private, loopback or link-local addresses are rejected by default, independent of `NODE_ENV`. Enable the relaxations explicitly where needed, for example for local development or for services inside the same cluster:
 
-| Variable                             | Default                             | Effect                                                                                                 |
-| ------------------------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `OUTBOUND_URL_ALLOW_HTTP`            | `true` unless `NODE_ENV=production` | Allow plain HTTP targets                                                                               |
-| `OUTBOUND_URL_ALLOW_PRIVATE_NETWORK` | `true` unless `NODE_ENV=production` | Allow targets that resolve to private, loopback or link-local addresses (checked after DNS resolution) |
-| `OUTBOUND_URL_ALLOWED_HOSTS`         | empty                               | Hosts that are allowed even if they would otherwise be blocked                                         |
+| Variable                             | Default | Effect                                                                                                 |
+| ------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------ |
+| `OUTBOUND_URL_ALLOW_HTTP`            | `false` | Allow plain HTTP targets                                                                               |
+| `OUTBOUND_URL_ALLOW_PRIVATE_NETWORK` | `false` | Allow targets that resolve to private, loopback or link-local addresses (checked after DNS resolution) |
+| `OUTBOUND_URL_ALLOWED_HOSTS`         | empty   | Hosts that are allowed even if they would otherwise be blocked                                         |
 
 **TLS Configuration:**
 
@@ -475,6 +475,18 @@ EUDIPLO does not terminate TLS itself. Deploy behind a reverse proxy (e.g., NGIN
 **Certificate Trust:**
 
 For external KMS providers (e.g., Vault, AWS KMS), EUDIPLO validates TLS certificates using the system's default trust store. Custom CA certificates can be added via the `NODE_EXTRA_CA_CERTS` environment variable.
+
+---
+
+## Skipping Checks
+
+Checks of the normal flow are never relaxed implicitly (for example based on `NODE_ENV`). A check that must be turned off for development or interoperability testing gets a `SKIP_<CHECK>` flag that defaults to `false`. The backend logs every active skip flag as a warning on startup, and the affected code path logs a warning each time it skips the check.
+
+| Flag                    | Skipped check                                                                                          |
+| ----------------------- | ------------------------------------------------------------------------------------------------------ |
+| `SKIP_OVERASKING_CHECK` | The registration certificate must authorize every credential in the DCQL query (overasking prevention) |
+
+See [Skip Flags](../deployment/environment-variables.md#skip-flags) for the full reference.
 
 ---
 
@@ -508,12 +520,13 @@ Before deploying EUDIPLO to production, verify:
 - ✅ **Session cleanup** enabled with appropriate retention policy
 - ✅ **Rate limiting** configured in the reverse proxy or API gateway
 - ✅ **CORS origins** restricted in the reverse proxy, if required
-- ✅ **Outbound URL policy** reviewed (`NODE_ENV=production` blocks HTTP and private network targets)
+- ✅ **Outbound URL policy** relaxations (`OUTBOUND_URL_ALLOW_*`) only where required
 - ✅ **Log redaction** enabled (`LOG_REDACT_SENSITIVE_DATA=true`) and debug logging disabled
 - ✅ **TLS certificates** valid and trusted
 - ✅ **DPoP enforcement** enabled for production credential issuance
 - ✅ **Wallet attestation** enabled for high-security use cases
 - ✅ **Trust list validation** configured for credential verification
+- ✅ **No `SKIP_*` flags** set (the startup log lists active ones)
 
 ---
 
