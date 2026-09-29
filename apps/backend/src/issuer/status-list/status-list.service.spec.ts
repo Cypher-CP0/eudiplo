@@ -1,5 +1,4 @@
 import "reflect-metadata";
-import { ConfigService } from "@nestjs/config";
 import { DataSource } from "typeorm";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { ClientEntity } from "../../auth/client/entities/client.entity.js";
@@ -7,7 +6,10 @@ import { TenantEntity } from "../../auth/tenant/entities/tenant.entity.js";
 import { ActiveCredentialSlot } from "./entities/active-credential-slot.entity.js";
 import { StatusListEntity } from "./entities/status-list.entity.js";
 import { StatusMapping } from "./entities/status-mapping.entity.js";
-import { StatusListService } from "./status-list.service.js";
+import {
+    MAX_STATUS_LIST_CAPACITY,
+    StatusListService,
+} from "./status-list.service.js";
 
 describe("StatusListService SQLite concurrency", () => {
     let dataSource: DataSource;
@@ -28,24 +30,14 @@ describe("StatusListService SQLite concurrency", () => {
         });
         await dataSource.initialize();
 
-        const configService = {
-            getOrThrow: vi.fn((key: string) => {
-                if (key === "PUBLIC_URL") {
-                    return "https://issuer.example";
-                }
-                if (key === "STATUS_CAPACITY") {
-                    return 4;
-                }
-                if (key === "STATUS_BITS") {
-                    return 1;
-                }
-                throw new Error(`Unexpected config key: ${key}`);
-            }),
-        } as unknown as ConfigService;
         const orchestrator = { register: vi.fn() };
 
         service = new StatusListService(
-            configService,
+            {
+                publicUrl: "https://issuer.example",
+                statusCapacity: 4,
+                statusBits: 1,
+            },
             {} as never,
             {} as never,
             dataSource,
@@ -358,5 +350,17 @@ describe("StatusListService SQLite concurrency", () => {
             .getRepository(StatusListEntity)
             .findOneByOrFail({ id: "list-1", tenantId: "tenant-1" });
         expect(list.elements).toEqual([1, 1, 0, 0]);
+    });
+
+    test.each([
+        0,
+        -1,
+        1.5,
+        MAX_STATUS_LIST_CAPACITY + 1,
+        Number.MAX_SAFE_INTEGER,
+    ])("rejects capacity %s before allocating the list", async (capacity) => {
+        await expect(
+            service.createNewList("tenant-1", { capacity }),
+        ).rejects.toMatchObject({ status: 400 });
     });
 });

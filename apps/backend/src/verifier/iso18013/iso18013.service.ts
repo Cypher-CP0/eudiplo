@@ -8,6 +8,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import {
     BadRequestException,
+    Inject,
     Injectable,
     NotFoundException,
 } from "@nestjs/common";
@@ -23,26 +24,34 @@ import { CertService } from "../../crypto/key/cert/cert.service.js";
 import { KeyChainService } from "../../crypto/key/key-chain.service.js";
 import { KeyUsageType } from "../../crypto/key/types/key-usage-type.js";
 import { WebhookEndpointEntity } from "../../issuer/configuration/webhook-endpoint/entities/webhook-endpoint.entity.js";
-import { ServiceTypeIdentifier } from "../../issuer/trust-list/trustlist.service.js";
-import { SessionStatus } from "../../session/entities/session.entity.js";
+import { ChangeSessionState } from "../../session/application/change-session-state.js";
+import { CreateSession } from "../../session/application/create-session.js";
+import { SessionStore } from "../../session/application/session-store.js";
+import type {
+    SessionData,
+    SessionUpdate,
+} from "../../session/domain/session-data.js";
+import { SessionStatus } from "../../session/domain/session-state.js";
 import { SessionAuditService } from "../../session/logging/session-audit.service.js";
-import { SessionService } from "../../session/session.service.js";
-import { revocationModeToPolicy } from "../../trust/revocation-policy.util.js";
 import {
     DEFAULT_VERIFIER_SKEW_SECONDS,
     RevocationCheckMode,
     VerifierOptions,
 } from "../../trust/types.js";
+import {
+    PRESENTATION_RESULT_PUBLISHER,
+    type PresentationResultPublisher,
+} from "../../webhook/ports/presentation-result-publisher.js";
 import { WebhookConfig } from "../../webhook/webhook.dto.js";
-import { WebhookService } from "../../webhook/webhook.service.js";
-import { MdocverifierService } from "../presentations/credential/mdocverifier/mdocverifier.service.js";
+import { CredentialVerifierFormatRegistry } from "../presentations/application/credential-verifier-format-registry.js";
+import { PresentationConfigService } from "../presentations/configuration/presentation-config.service.js";
 import { shortVerificationMessage } from "../presentations/credential/verification-failure.js";
 import {
-    TrustedAuthorityQueryEtsiTl,
-    TrustedAuthorityQueryOpenIdFederation,
-    TrustedAuthorityType,
-} from "../presentations/entities/presentation-config.entity.js";
-import { PresentationsService } from "../presentations/presentations.service.js";
+    trustListAuthorities,
+    verifierTrustOptions,
+} from "../presentations/domain/verifier-trust-options.js";
+import { InvalidTrustedAuthoritiesError } from "../presentations/ports/trust-list-ref-resolver.js";
+import { TrustedAuthoritiesService } from "../presentations/trusted-authorities.service.js";
 import {
     buildDeviceRequestCbor,
     buildEncryptionInfo,
@@ -66,11 +75,13 @@ export interface Iso18013Offer {
 @Injectable()
 export class Iso18013Service {
     constructor(
-        private readonly presentationsService: PresentationsService,
-        private readonly sessionService: SessionService,
+        private readonly presentationConfigService: PresentationConfigService,
+        private readonly createSession: CreateSession,
+        private readonly sessionStore: SessionStore,
         private readonly encryptionService: EncryptionService,
-        private readonly mdocverifierService: MdocverifierService,
-        private readonly webhookService: WebhookService,
+        private readonly credentialVerifierFormats: CredentialVerifierFormatRegistry,
+        @Inject(PRESENTATION_RESULT_PUBLISHER)
+        private readonly presentationResultPublisher: PresentationResultPublisher,
         private readonly auditLogService: SessionAuditService,
         private readonly configService: ConfigService,
         private readonly certService: CertService,
@@ -79,7 +90,24 @@ export class Iso18013Service {
         private readonly webhookEndpointRepo: Repository<WebhookEndpointEntity>,
         @InjectPinoLogger(Iso18013Service.name)
         private readonly logger: PinoLogger,
+        private readonly trustedAuthoritiesService: TrustedAuthoritiesService,
+        private readonly changeSessionState: ChangeSessionState,
     ) {}
+
+    /** Persists a failed outcome and announces the terminal transition. */
+    private async failSession(
+        session: SessionData,
+        update: Omit<SessionUpdate, "status">,
+    ): Promise<void> {
+        const updated = await this.sessionStore.updateForTenant(
+            session.tenantId,
+            session.id,
+            { ...update, status: SessionStatus.Failed },
+        );
+        if (updated > 0) {
+            this.changeSessionState.announce(session, SessionStatus.Failed);
+        }
+    }
 
     private async resolveWebhookFromEndpoint(
         webhookEndpointId: string | null | undefined,
@@ -118,10 +146,11 @@ export class Iso18013Service {
         skewSeconds?: number,
         webhook?: WebhookConfig,
     ): Promise<Iso18013Offer> {
-        const config = await this.presentationsService.getPresentationConfig(
-            requestId,
-            tenantId,
-        );
+        const config =
+            await this.presentationConfigService.getPresentationConfig(
+                requestId,
+                tenantId,
+            );
 
         const pubJwk =
             await this.encryptionService.getEncryptionPublicKey(tenantId);
@@ -204,7 +233,7 @@ export class Iso18013Service {
         );
         const resolvedWebhook = webhook ?? endpointWebhook;
 
-        await this.sessionService.create({
+        await this.createSession.execute({
             id: sessionId,
             tenantId,
             requestId,
@@ -302,10 +331,7 @@ export class Iso18013Service {
     ): Promise<Record<string, unknown>> {
         let session;
         try {
-            session = await this.sessionService.getBy({
-                id: sessionId,
-                dcApiProtocol: "iso-18013-7",
-            });
+            session = await this.sessionStore.getIso18013(sessionId);
         } catch {
             throw new NotFoundException("ISO 18013-7 session not found");
         }
@@ -372,8 +398,7 @@ export class Iso18013Service {
         } catch (err: any) {
             const reason = `HPKE decryption failed: ${err?.message ?? err}`;
             this.logger.warn({ sessionId }, reason);
-            await this.sessionService.add(session.id, {
-                status: SessionStatus.Failed,
+            await this.failSession(session, {
                 errorReason: reason,
             });
             this.auditLogService.logFlowError(logContext, err as Error, {
@@ -382,10 +407,11 @@ export class Iso18013Service {
             throw new BadRequestException("HPKE decryption failed");
         }
 
-        const config = await this.presentationsService.getPresentationConfig(
-            session.requestId!,
-            session.tenantId,
-        );
+        const config =
+            await this.presentationConfigService.getPresentationConfig(
+                session.requestId!,
+                session.tenantId,
+            );
 
         const mdocCred = config.dcql_query.credentials.find(
             (c) => c.format === "mso_mdoc",
@@ -399,65 +425,43 @@ export class Iso18013Service {
         const host = this.configService.getOrThrow<string>("PUBLIC_URL");
         const tenantHost = `${host}/issuers/${session.tenantId}`;
 
-        const loteAuthorities = mdocCred.trusted_authorities?.find(
-            (auth): auth is TrustedAuthorityQueryEtsiTl =>
-                auth.type === TrustedAuthorityType.ETSI_TL,
-        );
-        const federationAuthorities = mdocCred.trusted_authorities?.find(
-            (auth): auth is TrustedAuthorityQueryOpenIdFederation =>
-                auth.type === TrustedAuthorityType.OPENID_FEDERATION,
-        );
-
-        const resolvedLoteAuthorities =
-            await this.presentationsService.resolveTrustListRefsForTenant(
-                loteAuthorities?.values,
+        const resolvedLoteAuthorities = await this.trustedAuthoritiesService
+            .resolveTrustListRefsForTenant(
+                trustListAuthorities(mdocCred.trusted_authorities),
                 session.tenantId,
                 tenantHost,
-            );
+            )
+            .catch((error: unknown) => {
+                if (error instanceof InvalidTrustedAuthoritiesError) {
+                    throw new BadRequestException(error.message);
+                }
+                throw error;
+            });
 
-        const verifyOptions: VerifierOptions = {
-            trustListSource: {
-                lotes: resolvedLoteAuthorities,
-                acceptedServiceTypes: [
-                    ServiceTypeIdentifier.EaaIssuance,
-                    ServiceTypeIdentifier.PIDIssuance,
-                ],
-            },
-            federationTrustSource: federationAuthorities?.values.length
-                ? {
-                      mode: "hybrid",
-                      trustAnchors: federationAuthorities.values.map(
-                          (value) => ({
-                              entityId: value,
-                              entityConfigurationUri: `${value.replace(/\/$/, "")}/.well-known/openid-federation`,
-                          }),
-                      ),
-                  }
-                : undefined,
-            policy: {
-                requireX5c: true,
-                revocation: revocationModeToPolicy(
-                    config.statusCheckMode ?? RevocationCheckMode.Strict,
-                ),
-            },
-            skewSeconds:
-                session.skewSeconds ??
-                config.skewSeconds ??
-                DEFAULT_VERIFIER_SKEW_SECONDS,
-        };
+        const verifyOptions: VerifierOptions = verifierTrustOptions({
+            trustLists: resolvedLoteAuthorities,
+            authorities: mdocCred.trusted_authorities,
+            statusCheckMode:
+                config.statusCheckMode ?? RevocationCheckMode.Strict,
+            skewSeconds: session.skewSeconds ?? config.skewSeconds,
+        });
 
         const deviceResponseB64 = deviceResponseCbor.toString("base64url");
 
-        // Verify the mDOC using the pre-built DCAPIHandover transcript
-        const verifyResult = await this.mdocverifierService.verify(
-            deviceResponseB64,
-            {
-                protocol: "iso-18013-7",
-                sessionTranscript: transcript.sessionTranscript,
-            },
-            verifyOptions,
-            mdocCred.claims?.map((c) => c.path),
-        );
+        // Verify the mDOC using the pre-built DCAPIHandover transcript. The
+        // requested elements are part of the DeviceRequest; a missing
+        // element is not rejected separately in this flow.
+        const verifyResult = await this.credentialVerifierFormats
+            .resolve("mso_mdoc")
+            .verify(deviceResponseB64, {
+                credentialId: mdocCred.id,
+                binding: {
+                    protocol: "iso-18013-7",
+                    sessionTranscript: transcript.sessionTranscript,
+                },
+                options: verifyOptions,
+                claims: mdocCred.claims,
+            });
 
         this.auditLogService.logCredentialVerification(
             logContext,
@@ -469,15 +473,14 @@ export class Iso18013Service {
             // Machine-readable code + short message for the caller/UI; the
             // verbose failureReason (certificate subjects, thumbprints,
             // configured lists) is kept to logs/audit only.
-            const errorCode = verifyResult.failureType ?? "verification_error";
+            const errorCode = verifyResult.failure.type ?? "verification_error";
             const shortMessage = shortVerificationMessage(
-                verifyResult.failureType,
+                verifyResult.failure.type,
             );
             const verboseReason =
-                verifyResult.failureReason ?? "mDOC verification failed";
+                verifyResult.failure.reason ?? "mDOC verification failed";
 
-            await this.sessionService.add(session.id, {
-                status: SessionStatus.Failed,
+            await this.failSession(session, {
                 errorReason: shortMessage,
                 failureCode: errorCode,
                 outcome: {
@@ -518,25 +521,37 @@ export class Iso18013Service {
 
         const responseCode = randomUUID();
 
-        await this.sessionService.add(session.id, {
-            credentials: credentials as any,
-            status: SessionStatus.Completed,
-            responseCode,
-            consumed: true,
-            consumedAt: new Date(),
-            outcome: {
-                result: "success",
-                credentials: [
-                    {
-                        id: mdocCred.id,
-                        format: "mso_mdoc",
-                        docType: verifyResult.docType,
-                        verified: true,
-                        trust: verifyResult.provenance,
-                    },
-                ],
+        // Complete atomically with the single-use flag so a concurrent
+        // response cannot also complete (and announce) the session.
+        const completed = await this.sessionStore.updateIfUnconsumed(
+            session.tenantId,
+            session.id,
+            {
+                credentials: credentials as any,
+                status: SessionStatus.Completed,
+                responseCode,
+                consumed: true,
+                consumedAt: new Date(),
+                outcome: {
+                    result: "success",
+                    credentials: [
+                        {
+                            id: mdocCred.id,
+                            format: "mso_mdoc",
+                            docType: verifyResult.docType,
+                            verified: true,
+                            trust: verifyResult.provenance,
+                        },
+                    ],
+                },
             },
-        });
+        );
+        if (!completed) {
+            throw new BadRequestException(
+                "The presentation offer has already been used",
+            );
+        }
+        this.changeSessionState.announce(session, SessionStatus.Completed);
 
         const webhook =
             session.parsedWebhook ??
@@ -545,12 +560,11 @@ export class Iso18013Service {
                 session.tenantId,
             ));
         if (webhook) {
-            const webhookResponse = await this.webhookService
-                .sendWebhook({
+            const webhookResponse = await this.presentationResultPublisher
+                .publish({
                     webhook,
                     session,
                     credentials,
-                    expectResponse: false,
                 })
                 .catch((err: any) => {
                     this.logger.warn(

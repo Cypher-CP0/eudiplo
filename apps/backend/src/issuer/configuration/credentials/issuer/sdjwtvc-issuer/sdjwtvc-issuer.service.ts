@@ -1,5 +1,4 @@
-import { Injectable } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
+import { Inject, Injectable } from "@nestjs/common";
 import type { Jwk } from "@openid4vc/oauth2";
 import { digest, generateSalt } from "@owf/crypto";
 import { JWTwithStatusListPayload } from "@owf/token-status-list";
@@ -8,17 +7,19 @@ import { CertService } from "../../../../../crypto/key/cert/cert.service.js";
 import { CryptoImplementationService } from "../../../../../crypto/key/crypto-implementation/crypto-implementation.service.js";
 import { KeyChainService } from "../../../../../crypto/key/key-chain.service.js";
 import { KeyUsageType } from "../../../../../crypto/key/types/key-usage-type.js";
-import { Session } from "../../../../../session/entities/session.entity.js";
+import type { SessionData as Session } from "../../../../../session/domain/session-data.js";
 import { StatusListService } from "../../../../status-list/status-list.service.js";
 import {
-    CredentialConfig,
-    SdJwtTrustFormat,
-} from "../../entities/credential.entity.js";
+    CREDENTIAL_SETTINGS,
+    type CredentialSettings,
+} from "../../credential-settings.js";
+import type { CredentialConfiguration } from "../../domain/credential-configuration.js";
+import { SdJwtTrustFormat } from "../../entities/credential.entity.js";
 import { buildDisclosureFrame } from "../../utils/index.js";
 import { roundedCredentialValidity } from "../credential-time.util.js";
 
 export interface SdJwtVcIssueOptions {
-    credentialConfiguration: CredentialConfig;
+    credentialConfiguration: CredentialConfiguration;
     holderCnf: Jwk;
     session: Session;
     claims: Record<string, any>;
@@ -33,7 +34,8 @@ export interface SdJwtVcIssueOptions {
 export class SdjwtvcIssuerService {
     constructor(
         private readonly certService: CertService,
-        private readonly configService: ConfigService,
+        @Inject(CREDENTIAL_SETTINGS)
+        private readonly settings: CredentialSettings,
         private readonly statusListService: StatusListService,
         private readonly cryptoImplementationService: CryptoImplementationService,
         private readonly keyChainService: KeyChainService,
@@ -97,7 +99,7 @@ export class SdjwtvcIssuerService {
             };
         }
 
-        const host = this.configService.getOrThrow<string>("PUBLIC_URL");
+        const host = this.settings.publicUrl;
         const disclosureFrame =
             buildDisclosureFrame(credentialConfiguration.fields as any) ?? {};
 

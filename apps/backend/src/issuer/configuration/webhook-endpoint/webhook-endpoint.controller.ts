@@ -7,13 +7,14 @@ import {
     Param,
     Patch,
     Post,
-    Req,
 } from "@nestjs/common";
 import { ApiBody, ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
-import { Request } from "express";
+import type { AuditLogRequestMeta } from "../../../audit-log/audit-log.service.js";
+import { AuditMeta } from "../../../audit-log/audit-log-context.util.js";
 import { Role } from "../../../auth/roles/role.enum.js";
 import { Secured } from "../../../auth/secure.decorator.js";
 import { Token, TokenPayload } from "../../../auth/token.decorator.js";
+import type { WebhookEndpointData } from "./domain/webhook-endpoint-data.js";
 import { CreateWebhookEndpointDto } from "./dto/create-webhook-endpoint.dto.js";
 import { UpdateWebhookEndpointDto } from "./dto/update-webhook-endpoint.dto.js";
 import { WebhookEndpointEntity } from "./entities/webhook-endpoint.entity.js";
@@ -41,7 +42,7 @@ export class WebhookEndpointController {
         description: "List of webhook endpoints",
         type: [WebhookEndpointEntity],
     })
-    getAll(@Token() user: TokenPayload): Promise<WebhookEndpointEntity[]> {
+    getAll(@Token() user: TokenPayload): Promise<WebhookEndpointData[]> {
         return this.service.getAll(user.entity!.id);
     }
 
@@ -68,9 +69,9 @@ export class WebhookEndpointController {
     create(
         @Body() dto: CreateWebhookEndpointDto,
         @Token() user: TokenPayload,
-        @Req() req: Request,
+        @AuditMeta() requestMeta: AuditLogRequestMeta,
     ) {
-        return this.service.create(user.entity!.id, dto, user, req);
+        return this.service.create(user.entity!.id, dto, user, requestMeta);
     }
 
     @Patch(":id")
@@ -86,9 +87,9 @@ export class WebhookEndpointController {
         @Param("id") id: string,
         @Body() dto: UpdateWebhookEndpointDto,
         @Token() user: TokenPayload,
-        @Req() req: Request,
+        @AuditMeta() requestMeta: AuditLogRequestMeta,
     ) {
-        return this.service.update(user.entity!.id, id, dto, user, req);
+        return this.service.update(user.entity!.id, id, dto, user, requestMeta);
     }
 
     @Delete(":id")
@@ -99,8 +100,8 @@ export class WebhookEndpointController {
     delete(
         @Param("id") id: string,
         @Token() user: TokenPayload,
-        @Req() req: Request,
+        @AuditMeta() requestMeta: AuditLogRequestMeta,
     ) {
-        return this.service.delete(user.entity!.id, id, user, req);
+        return this.service.delete(user.entity!.id, id, user, requestMeta);
     }
 }

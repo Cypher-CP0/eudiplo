@@ -1,158 +1,382 @@
-import type { AuthorizationServerMetadata } from "@openid4vc/oauth2";
-import { of, throwError } from "rxjs";
+import {
+    BadRequestException,
+    ConflictException,
+    HttpException,
+} from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
+import { SessionNotFound } from "../../../session/application/session-errors.js";
+import { CredentialSessionAuthorizationDenied } from "./application/correlate-credential-token-session.js";
+import { HandleCredentialNotification } from "./application/handle-credential-notification.js";
+import {
+    CredentialAuthorizationError,
+    ResolveAuthorizedCredentialConfiguration,
+} from "./application/resolve-authorized-credential-configuration.js";
+import { ResolveCredentialProofs } from "./application/resolve-credential-proofs.js";
+import {
+    AuthorizationServerMetadataUnavailable,
+    AuthorizationServerNotConfigured,
+} from "./domain/authorization-server-errors.js";
+import { InvalidCredentialOffer } from "./domain/credential-offer-errors.js";
+import { InvalidCredentialProof } from "./domain/credential-proof-errors.js";
+import { CredentialRequestException } from "./exceptions/index.js";
 import { Oid4vciService } from "./oid4vci.service.js";
+import type { Oid4vciRequestContext } from "./request-context.js";
 
-describe("Oid4vciService internal JWKS resolution", () => {
-    it("uses INTERNAL_URL only for the built-in authorization server", () => {
-        const service = Object.assign(
-            Object.create(Oid4vciService.prototype) as Oid4vciService,
-            {
-                configService: {
-                    get: vi.fn(() => "http://127.0.0.1:3000/"),
-                },
-                authzService: {
-                    getAuthzIssuer: vi.fn(
-                        (tenantId: string) =>
-                            `https://issuer.example/issuers/${tenantId}`,
+const issuerMetadata = {
+    authorizationServers: [],
+    credentialIssuer: { credential_issuer: "https://issuer.example" },
+};
+
+function service(overrides: Record<string, unknown>): Oid4vciService {
+    return Object.assign(
+        Object.create(Oid4vciService.prototype) as Oid4vciService,
+        {
+            logger: { debug: vi.fn(), warn: vi.fn() },
+            traceService: { getSpan: () => undefined },
+            sdk: { issuer: vi.fn() },
+            buildIssuerMetadata: {
+                execute: vi.fn().mockResolvedValue(issuerMetadata),
+            },
+            ...overrides,
+        },
+    );
+}
+
+async function rejection(promise: Promise<unknown>): Promise<unknown> {
+    try {
+        await promise;
+    } catch (error) {
+        return error;
+    }
+    throw new Error("expected a rejection");
+}
+
+function protocolError(error: unknown) {
+    expect(error).toBeInstanceOf(CredentialRequestException);
+    return (error as HttpException).getResponse();
+}
+
+describe("Oid4vciService credential request error mapping", () => {
+    const request: Oid4vciRequestContext = {
+        method: "POST",
+        url: "/issuers/tenant/vci/credential",
+        headers: { authorization: "DPoP access-token" },
+        contentType: "application/json",
+        body: { credential_configuration_id: "pid", proofs: {} },
+    };
+
+    function setup(overrides: {
+        resolveSession?: () => Promise<unknown>;
+        issue?: () => Promise<unknown>;
+        authorizationDetails?: unknown;
+    }) {
+        const session = {
+            id: "session",
+            tenantId: "tenant",
+            notifications: [],
+        };
+        return service({
+            sdk: {
+                issuer: () => ({
+                    getKnownCredentialConfigurationsSupported: () => ({
+                        pid: {},
+                    }),
+                    parseCredentialRequest: () => ({
+                        proofs: { jwt: ["proof-jwt"] },
+                        credentialConfigurationId: "pid",
+                    }),
+                    createCredentialResponse: () => ({
+                        credentialResponse: {},
+                    }),
+                }),
+            },
+            issuanceService: {
+                getIssuanceConfiguration: vi.fn().mockResolvedValue({}),
+            },
+            resolveCredentialProofs: new ResolveCredentialProofs(),
+            accessTokens: {
+                verify: vi.fn().mockResolvedValue({
+                    iss: "https://issuer.example",
+                    sub: "session",
+                    authorization_details: overrides.authorizationDetails,
+                }),
+            },
+            subjectKeyService: {
+                deriveIssuanceSetId: vi.fn().mockResolvedValue("set"),
+            },
+            resolveAuthorizedCredentialConfiguration:
+                new ResolveAuthorizedCredentialConfiguration(),
+            credentialsService: {
+                getSupportedProofTypesForCredentialConfig: vi
+                    .fn()
+                    .mockResolvedValue(["jwt"]),
+            },
+            resolveCredentialSession: {
+                execute:
+                    overrides.resolveSession ??
+                    vi.fn().mockResolvedValue({
+                        session,
+                        claimsResult: { claims: {} },
+                        isExternalAsToken: false,
+                        isChainedAsToken: false,
+                    }),
+            },
+            auditLogger: {
+                logFlowStart: vi.fn(),
+                logFlowError: vi.fn(),
+                logFlowComplete: vi.fn(),
+                logCredentialIssuance: vi.fn(),
+            },
+            nonceService: { validateAndConsume: vi.fn() },
+            issueCredentialsFromProofs: {
+                execute:
+                    overrides.issue ??
+                    vi.fn().mockResolvedValue([{ credential: "credential" }]),
+            },
+            sessionStore: { updateForTenant: vi.fn() },
+        });
+    }
+
+    it("issues a credential when every step succeeds", async () => {
+        await expect(
+            setup({}).getCredential(request, "tenant"),
+        ).resolves.toEqual({ credentialResponse: {} });
+    });
+
+    it("maps InvalidCredentialProof to invalid_proof", async () => {
+        const error = await rejection(
+            setup({
+                issue: () =>
+                    Promise.reject(
+                        new InvalidCredentialProof("holder key rejected"),
                     ),
-                },
-            },
+            }).getCredential(request, "tenant"),
         );
-        const authorizationServers = [
-            {
-                issuer: "https://issuer.example/issuers/acme",
-                jwks_uri:
-                    "https://issuer.example/.well-known/jwks.json/issuers/acme",
-            },
-            {
-                issuer: "https://external.example",
-                jwks_uri: "https://external.example/jwks",
-            },
-        ] as AuthorizationServerMetadata[];
+        expect(protocolError(error)).toEqual({
+            error: "invalid_proof",
+            error_description: "holder key rejected",
+        });
+    });
 
-        const resolvedAuthorizationServers = service[
-            "getAuthorizationServersForResourceVerification"
-        ]("acme", authorizationServers);
+    it("maps CredentialAuthorizationError to its own error code", async () => {
+        const error = await rejection(
+            setup({
+                authorizationDetails: [
+                    {
+                        type: "openid_credential",
+                        credential_configuration_id: "other",
+                    },
+                ],
+            }).getCredential(request, "tenant"),
+        );
+        const expected = new CredentialAuthorizationError(
+            "invalid_credential_request",
+            "Access token is not authorized for credential_configuration_id 'pid'",
+        );
+        expect(protocolError(error)).toEqual({
+            error: expected.code,
+            error_description: expected.message,
+        });
+    });
 
-        expect(resolvedAuthorizationServers).toEqual([
-            {
-                issuer: "https://issuer.example/issuers/acme",
-                jwks_uri:
-                    "http://127.0.0.1:3000/.well-known/jwks.json/issuers/acme",
-            },
-            {
-                issuer: "https://external.example",
-                jwks_uri: "https://external.example/jwks",
-            },
-        ]);
-        expect(authorizationServers[0].jwks_uri).toBe(
-            "https://issuer.example/.well-known/jwks.json/issuers/acme",
+    it("maps CredentialSessionAuthorizationDenied to credential_request_denied", async () => {
+        const error = await rejection(
+            setup({
+                resolveSession: () =>
+                    Promise.reject(
+                        new CredentialSessionAuthorizationDenied(
+                            "The access token is not associated with a valid session",
+                        ),
+                    ),
+            }).getCredential(request, "tenant"),
+        );
+        expect(protocolError(error)).toEqual({
+            error: "credential_request_denied",
+            error_description:
+                "The access token is not associated with a valid session",
+        });
+    });
+
+    it("propagates SessionNotFound unchanged for the controller to wrap", async () => {
+        const notFound = new SessionNotFound();
+        const error = await rejection(
+            setup({
+                resolveSession: () => Promise.reject(notFound),
+            }).getCredential(request, "tenant"),
+        );
+        expect(error).toBe(notFound);
+    });
+});
+
+describe("Oid4vciService authorization server errors", () => {
+    it("maps offer errors to 409 and 400", async () => {
+        const offer = (error: Error) =>
+            rejection(
+                service({
+                    createCredentialOffer: {
+                        execute: vi.fn().mockRejectedValue(error),
+                    },
+                }).createOffer("tenant", {} as never),
+            );
+
+        expect(await offer(new InvalidCredentialOffer())).toBeInstanceOf(
+            ConflictException,
+        );
+        const notConfigured = await offer(
+            new AuthorizationServerNotConfigured(
+                "No enabled authorization server configured",
+            ),
+        );
+        expect(notConfigured).toBeInstanceOf(BadRequestException);
+        expect((notConfigured as Error).message).toBe(
+            "No enabled authorization server configured",
+        );
+    });
+
+    it("maps metadata resolution errors on the notification endpoint to 400", async () => {
+        const error = await rejection(
+            service({
+                issuanceService: {
+                    getIssuanceConfiguration: vi.fn().mockResolvedValue({}),
+                },
+                buildIssuerMetadata: {
+                    execute: vi
+                        .fn()
+                        .mockRejectedValue(
+                            new AuthorizationServerMetadataUnavailable(),
+                        ),
+                },
+            }).handleNotification(
+                {
+                    method: "POST",
+                    url: "/notification",
+                    headers: {},
+                    contentType: "application/json",
+                    body: {},
+                },
+                { notification_id: "n", event: "credential_accepted" },
+                "tenant",
+            ),
+        );
+        expect(error).toBeInstanceOf(BadRequestException);
+        expect((error as Error).message).toBe(
+            "Failed to fetch authorization server metadata",
         );
     });
 });
 
-describe("Oid4vciService authorization server metadata caching & deduplication", () => {
-    it("caches AS metadata and deduplicates concurrent in-flight requests", async () => {
-        const httpGetMock = vi.fn().mockReturnValue(
-            of({
-                data: {
-                    issuer: "https://as.example.org",
-                    token_endpoint: "https://as.example.org/token",
-                },
-            }),
-        );
-        const addCounterMock = vi.fn();
-        const metricServiceMock = {
-            getCounter: vi.fn(() => ({
-                add: addCounterMock,
-            })),
+describe("OID4VCI notification endpoint lookup", () => {
+    function setup(lookupError?: Error | null) {
+        const session = {
+            id: "session",
+            tenantId: "tenant",
+            webhookEndpointId: "endpoint",
         };
-
-        const service = Object.assign(
-            Object.create(Oid4vciService.prototype) as Oid4vciService,
-            {
-                httpService: { get: httpGetMock },
-                asMetadataCache: new Map(),
-                inFlightAsMetadataRequests: new Map(),
-                logger: { debug: vi.fn(), warn: vi.fn() },
-                asMetadataHitsCounter: metricServiceMock.getCounter(),
-                asMetadataMissesCounter: metricServiceMock.getCounter(),
-                asMetadataStaleCounter: metricServiceMock.getCounter(),
-                asMetadataFetchesCounter: metricServiceMock.getCounter(),
+        const endpoint = {
+            url: "https://webhook.example",
+            auth: { type: "none" },
+        };
+        const notification = {
+            id: "notification",
+            event: "credential_accepted",
+            credentialConfigurationId: "pid",
+        };
+        const order: string[] = [];
+        const publish = vi.fn(async () => {
+            order.push("publish");
+        });
+        const changeState = vi.fn(async () => {
+            order.push("state");
+        });
+        const logError = vi.fn();
+        const lookup = vi.fn(async () => {
+            order.push("lookup");
+            if (lookupError) throw lookupError;
+            return lookupError === null ? null : endpoint;
+        });
+        const oid4vci = service({
+            issuanceService: {
+                getIssuanceConfiguration: vi.fn().mockResolvedValue({}),
             },
-        );
-
-        const [m1, m2, m3] = await Promise.all([
-            service["fetchAuthorizationServerMetadata"](
-                "https://as.example.org",
+            accessTokens: {
+                verify: vi.fn().mockResolvedValue({ sub: "session" }),
+            },
+            sessionStore: {
+                getForTenant: vi.fn().mockResolvedValue(session),
+            },
+            handleCredentialNotification: new HandleCredentialNotification(
+                {
+                    execute: vi.fn(async () => {
+                        order.push("record");
+                        return notification;
+                    }),
+                },
+                { findForTenant: lookup },
+                { publish },
+                { execute: changeState },
             ),
-            service["fetchAuthorizationServerMetadata"](
-                "https://as.example.org",
-            ),
-            service["fetchAuthorizationServerMetadata"](
-                "https://as.example.org",
-            ),
-        ]);
+            auditLogger: { logError },
+        });
+        const execute = () =>
+            oid4vci.handleNotification(
+                {
+                    method: "POST",
+                    url: "/notification",
+                    headers: {},
+                    contentType: "application/json",
+                    body: {},
+                },
+                {
+                    notification_id: "notification",
+                    event: "credential_accepted",
+                },
+                "tenant",
+            );
+        return {
+            execute,
+            publish,
+            changeState,
+            logError,
+            lookup,
+            order,
+            session,
+            endpoint,
+            notification,
+        };
+    }
 
-        expect(m1.issuer).toBe("https://as.example.org");
-        expect(m2.issuer).toBe("https://as.example.org");
-        expect(m3.issuer).toBe("https://as.example.org");
-        expect(httpGetMock).toHaveBeenCalledTimes(1);
-
-        // Next call hits cache
-        const m4 = await service["fetchAuthorizationServerMetadata"](
-            "https://as.example.org",
-        );
-        expect(m4.issuer).toBe("https://as.example.org");
-        expect(httpGetMock).toHaveBeenCalledTimes(1);
+    it("propagates storage failures without completing the session", async () => {
+        const failure = new Error("database unavailable");
+        const test = setup(failure);
+        await expect(test.execute()).rejects.toBe(failure);
+        expect(test.publish).not.toHaveBeenCalled();
+        expect(test.changeState).not.toHaveBeenCalled();
+        expect(test.logError).toHaveBeenCalledOnce();
     });
 
-    it("serves stale metadata if fresh fetch fails and stale entry exists", async () => {
-        const httpGetMock = vi
-            .fn()
-            .mockReturnValueOnce(
-                of({
-                    data: {
-                        issuer: "https://as.example.org",
-                        token_endpoint: "https://as.example.org/token",
-                    },
-                }),
-            )
-            .mockReturnValueOnce(
-                throwError(() => new Error("Upstream server error")),
-            );
-
-        const service = Object.assign(
-            Object.create(Oid4vciService.prototype) as Oid4vciService,
-            {
-                httpService: { get: httpGetMock },
-                asMetadataCache: new Map(),
-                inFlightAsMetadataRequests: new Map(),
-                logger: { debug: vi.fn(), warn: vi.fn() },
-            },
+    it("still completes when the configured endpoint no longer exists", async () => {
+        const test = setup(null);
+        await expect(test.execute()).resolves.toBeUndefined();
+        expect(test.lookup).toHaveBeenCalledExactlyOnceWith(
+            "tenant",
+            "endpoint",
         );
-
-        // First fetch -> populates cache
-        await service["fetchAuthorizationServerMetadata"](
-            "https://as.example.org",
+        expect(test.publish).not.toHaveBeenCalled();
+        expect(test.changeState).toHaveBeenCalledWith(
+            test.session,
+            "completed",
         );
+        expect(test.order).toEqual(["record", "lookup", "state"]);
+    });
 
-        // Force item in cache to be expired
-        const cachedItem = service["asMetadataCache"].get(
-            "https://as.example.org",
+    it("persists, publishes, and changes state in that order", async () => {
+        const test = setup();
+        await test.execute();
+        expect(test.publish).toHaveBeenCalledWith(
+            test.endpoint,
+            test.session,
+            test.notification,
         );
-        cachedItem.expiresAt = Date.now() - 1000;
-
-        // Second fetch -> fresh fetch fails, fallback to stale metadata
-        const stale = await service["fetchAuthorizationServerMetadata"](
-            "https://as.example.org",
-        );
-
-        expect(stale.issuer).toBe("https://as.example.org");
-        expect(httpGetMock).toHaveBeenCalledTimes(3);
-        expect(service["logger"].warn).toHaveBeenCalledWith(
-            expect.stringContaining("returning stale cached metadata"),
-        );
+        expect(test.order).toEqual(["record", "lookup", "publish", "state"]);
     });
 });

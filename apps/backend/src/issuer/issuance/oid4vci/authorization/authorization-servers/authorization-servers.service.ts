@@ -1,24 +1,31 @@
 import { randomBytes } from "node:crypto";
 import {
     BadRequestException,
+    Inject,
     Injectable,
     Logger,
     NotFoundException,
 } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
-import { InjectRepository } from "@nestjs/typeorm";
 import { TraceService } from "nestjs-otel";
-import { Repository } from "typeorm";
 import { v4 } from "uuid";
 import { KeyChainService } from "../../../../../crypto/key/key-chain.service.js";
-import { SessionStatus } from "../../../../../session/entities/session.entity.js";
-import { SessionService } from "../../../../../session/session.service.js";
+import { CreateSession } from "../../../../../session/application/create-session.js";
+import { SessionStore } from "../../../../../session/application/session-store.js";
+import { SessionStatus } from "../../../../../session/domain/session-state.js";
 import { WalletAttestationService } from "../../../../../trust/wallet-attestation.service.js";
 import { Oid4vpService } from "../../../../../verifier/oid4vp/oid4vp.service.js";
 import type { TrustListRef } from "../../../../../verifier/presentations/entities/presentation-config.entity.js";
 import { ManagedAuthorizationServerConfig } from "../../../../configuration/issuance/dto/authorization-server-config.dto.js";
 import { ChainedAsTokenConfig } from "../../../../configuration/issuance/dto/chained-as-config.dto.js";
 import { IssuanceService } from "../../../../configuration/issuance/issuance.service.js";
+import {
+    OID4VCI_SETTINGS,
+    type Oid4vciSettings,
+} from "../../oid4vci-settings.js";
+import {
+    CHAINED_AS_SESSION_REPOSITORY,
+    type ChainedAsSessionRepository,
+} from "../ports/chained-as-session.repository.js";
 import {
     assertTokenRequestSessionValid,
     buildAccessTokenPayload,
@@ -29,7 +36,6 @@ import {
     buildWalletAttestationMetadata,
     ChainedAsParRequestDto,
     ChainedAsParResponseDto,
-    ChainedAsSessionEntity,
     ChainedAsSessionStatus,
     ChainedAsTokenRequestDto,
     ChainedAsTokenResponseDto,
@@ -71,22 +77,23 @@ export class AuthorizationServersService {
     private readonly authCodeLifetimeSeconds = 300;
 
     constructor(
-        private readonly configService: ConfigService,
+        @Inject(OID4VCI_SETTINGS) private readonly settings: Oid4vciSettings,
         private readonly keyChainService: KeyChainService,
-        private readonly sessionService: SessionService,
+        private readonly createSession: CreateSession,
+        private readonly sessionStore: SessionStore,
         private readonly issuanceService: IssuanceService,
         private readonly walletAttestationService: WalletAttestationService,
         private readonly traceService: TraceService,
         private readonly oid4vpService: Oid4vpService,
-        @InjectRepository(ChainedAsSessionEntity)
-        private readonly sessionRepository: Repository<ChainedAsSessionEntity>,
+        @Inject(CHAINED_AS_SESSION_REPOSITORY)
+        private readonly sessionRepository: ChainedAsSessionRepository,
     ) {}
 
     getAuthorizationServerBaseUrl(
         tenantId: string,
         authorizationServerId: string,
     ): string {
-        const publicUrl = this.configService.getOrThrow<string>("PUBLIC_URL");
+        const publicUrl = this.settings.publicUrl;
         return `${publicUrl}/issuers/${tenantId}/authorization-servers/${authorizationServerId}`;
     }
 
@@ -249,7 +256,7 @@ export class AuthorizationServersService {
         let issuerState = request.issuer_state;
         if (issuerState) {
             try {
-                await this.sessionService.get(issuerState);
+                await this.sessionStore.getForTenant(tenantId, issuerState);
             } catch {
                 throw new BadRequestException("Invalid issuer_state");
             }
@@ -312,13 +319,11 @@ export class AuthorizationServersService {
         }
 
         const sessionId = requestUri.slice(this.requestUriPrefix.length);
-        const session = await this.sessionRepository.findOne({
-            where: {
-                id: sessionId,
-                tenantId,
-                status: ChainedAsSessionStatus.PENDING_AUTHORIZE,
-            },
-        });
+        const session = await this.sessionRepository.findForTenant(
+            tenantId,
+            sessionId,
+            ChainedAsSessionStatus.PENDING_AUTHORIZE,
+        );
 
         if (!session) {
             throw new BadRequestException("Invalid or expired request_uri");
@@ -347,14 +352,14 @@ export class AuthorizationServersService {
 
         const callbackUrl = `${this.getAuthorizationServerBaseUrl(tenantId, authorizationServerId)}/vp-callback?cas=${encodeURIComponent(session.id)}`;
 
-        await this.sessionService.create({
+        await this.createSession.execute({
             id: session.id,
             tenantId,
             requestId: config.presentationConfigId,
             redirectUri: callbackUrl,
         });
 
-        const publicUrl = this.configService.getOrThrow<string>("PUBLIC_URL");
+        const publicUrl = this.settings.publicUrl;
         const offer = await this.oid4vpService.createRequest(
             config.presentationConfigId,
             {
@@ -386,13 +391,11 @@ export class AuthorizationServersService {
             authorizationServerId,
         );
 
-        const session = await this.sessionRepository.findOne({
-            where: {
-                id: chainedAsSessionId,
-                tenantId,
-                status: ChainedAsSessionStatus.PENDING_VP_CALLBACK,
-            },
-        });
+        const session = await this.sessionRepository.findForTenant(
+            tenantId,
+            chainedAsSessionId,
+            ChainedAsSessionStatus.PENDING_VP_CALLBACK,
+        );
 
         if (!session) {
             throw new BadRequestException(
@@ -411,7 +414,10 @@ export class AuthorizationServersService {
             );
         }
 
-        const verifierSession = await this.sessionService.get(session.id);
+        const verifierSession = await this.sessionStore.getForTenant(
+            session.tenantId,
+            session.id,
+        );
         if (
             verifierSession.status !== SessionStatus.Completed ||
             !responseCode ||
@@ -428,9 +434,13 @@ export class AuthorizationServersService {
         }
 
         if (session.issuerState && verifierSession.credentials) {
-            await this.sessionService.add(session.issuerState, {
-                credentials: verifierSession.credentials as any,
-            });
+            await this.sessionStore.updateForTenant(
+                session.tenantId,
+                session.issuerState,
+                {
+                    credentials: verifierSession.credentials as any,
+                },
+            );
         }
 
         const authorizationCode = randomBytes(32).toString("base64url");
@@ -512,7 +522,7 @@ export class AuthorizationServersService {
                 tenantId,
                 authorizationServerId,
             ),
-            audience: `${this.configService.getOrThrow<string>("PUBLIC_URL")}/issuers/${tenantId}`,
+            audience: `${this.settings.publicUrl}/issuers/${tenantId}`,
             session,
             tokenLifetime,
             jti,
@@ -570,7 +580,7 @@ export class AuthorizationServersService {
             tenantId,
             authorizationServerId,
         );
-        const publicUrl = this.configService.getOrThrow<string>("PUBLIC_URL");
+        const publicUrl = this.settings.publicUrl;
         const issuanceConfig =
             await this.issuanceService.getIssuanceConfiguration(tenantId);
         const walletAttestationPolicy = resolveWalletAttestationPolicy(

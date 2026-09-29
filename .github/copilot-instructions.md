@@ -9,6 +9,13 @@
 - **Deployment**: [deployment/](../deployment) — Docker Compose configs for minimal/full setups. See [deployment/README.md](../deployment/README.md).
 - **Monitoring**: [monitor/](../monitor) — OpenTelemetry Collector, Prometheus, Tempo, Loki & Grafana for observability.
 
+## Backend Architecture Direction
+- Follow the [target backend architecture](../apps/docs/docs/architecture/backend-architecture.md) and [backend-specific instructions](instructions/backend-architecture.instructions.md) for new or explicitly migrated code.
+- Keep capability ownership; application use cases depend on domain models and application-owned ports, with infrastructure implementing those ports and NestJS modules wiring them.
+- Keep Express, TypeORM, direct HTTP clients, infrastructure SDKs, and HTTP exceptions outside migrated application/domain boundaries. Prefer meaningful capability ports over generic library wrappers.
+- The [refactoring plan](../apps/docs/docs/architecture/refactoring-plan.md) tracks status, open findings and next slices. Execute only the task or slice requested by the user; do not automatically start or continue it.
+- Internal refactors may update all affected callers within the selected scope. Preserve external protocol/API/configuration behavior unless a change is explicitly requested.
+
 ## Developer Workflows
 - **Install dependencies**: `pnpm install` (root)
 - **Build all**: `pnpm build`
@@ -20,10 +27,10 @@
 
 ## Patterns & Conventions
 - **API Design**: RESTful, protocol-agnostic endpoints. See [apps/backend/src](../apps/backend/src).
-- **NestJS Modules**: Each feature has its own module with controllers, services, and subfolders:
+- **NestJS Modules**: Each feature has its own module. Folder layout, error mapping and DI wiring follow "Feature folder shape" in the [backend architecture](../apps/docs/docs/architecture/backend-architecture.md#feature-folder-shape): protocol and trust code uses `application/`, `domain/`, `ports/` and `adapters/`; administrative CRUD may stay a service with a TypeORM repository. Common subfolders:
   - `dto/` — Data Transfer Objects (request/response classes)
   - `entities/` — Database entities (TypeORM)
-  - `exceptions/` — Custom exceptions
+  - Application and domain errors are plain `Error` subclasses next to the use case or in `domain/`; missing resources extend `NotFoundError` (`shared/domain/not-found-error.ts`)
 - **DTOs**: Always place DTOs in a `dto/` folder within the module. Never define DTOs inline in controllers or services. This keeps controllers and services clean and focused on their responsibilities.
 - **Credential Configs**: JSON-based, managed via client UI and backend API.
 - **Key Management**: Pluggable, supports filesystem and cloud KMS (see backend config).
@@ -34,8 +41,8 @@
 
 ## Code Style & Quality
 - Follow `tsconfig.base.json` strict settings. Prefer ES2022+ features (async/await, optional chaining, class fields).
-- Use **Dependency Injection** everywhere in NestJS — never instantiate services manually.
-- Use **`@InjectRepository`** for TypeORM repositories — never use `getRepository` helpers.
+- Use **Dependency Injection** for production NestJS composition. Pure application/domain tests may construct classes directly with fake ports.
+- Use **`@InjectRepository`** for TypeORM repositories in persistence adapters; keep TypeORM out of migrated application/domain code.
 - Never return raw entities from controllers — always map to DTOs.
 - Use **Zod** for input validation (primary validation library in this project).
 - Prefer **Composition over Inheritance** for features and providers.
@@ -46,12 +53,12 @@
 - **ESM runtime paths**: Use `fileURLToPath(import.meta.url)` with `dirname()` for module-relative filesystem paths. Do not use `__dirname`, `__filename`, or implicit CommonJS `require()`.
 - **Dependency interop**: Use each dependency's native ESM default or named export form. Verify deep imports use explicit exported `.js` paths where the package requires them.
 - **Production startup**: Keep `start:prod` pointed at the explicit `dist/main.js` entry point.
-- When creating a module, always generate `<feature>.module.ts`, `<feature>.controller.ts`, `<feature>.service.ts` and create subfolders: `dto/`, `entities/`, `exceptions/` as needed.
+- Create only the module, controllers, services/use cases, and folders that the capability needs. Keep application commands distinct from transport DTOs and persistence entities.
 - Always add Swagger annotations (`@ApiTags`, `@ApiOperation`, `@ApiResponse`, `@ApiBody`) on all controller endpoints.
 - For controller request boundaries, prefer Zod-backed DTOs via `createZodDto(...)` and keep schema definitions as the source of truth.
 - Use the **Pino logger** (`nestjs-pino` / `PinoLogger`). For audit logging (compliance events persisted to DB), use `AuditLogService`.
-- Always wrap external calls in `try/catch` and throw domain-specific exceptions from the module's `exceptions/` folder.
-- Custom exceptions must extend NestJS `HttpException` — there is no custom base exception class.
+- Translate external failures at adapter boundaries into meaningful application errors while preserving causes internally and avoiding sensitive response details.
+- Application/domain errors must be transport-independent; map them to NestJS HTTP or protocol errors at inbound boundaries. Migrate existing exception behavior with characterization tests in the selected slice.
 - When adding credential/protocol-related functions, follow existing abstractions in `packages/eudiplo-sdk-core`. Never duplicate protocol logic across modules.
 - Protocol logic lives in feature modules: OID4VCI in `issuer/issuance/oid4vci/`, OID4VP in `verifier/oid4vp/`.
 
@@ -78,7 +85,7 @@
 - When adding foreign keys in migrations, ensure column types **exactly match** the referenced table's primary key type on both SQLite and PostgreSQL.
 
 ## Error Handling & Logging
-- All custom errors must extend NestJS `HttpException` — never throw generic `Error`.
+- Use explicit application/domain error types for expected failures. NestJS `HttpException` belongs at HTTP/protocol boundaries, where status codes, response bodies, and headers are mapped.
 - Use `PinoLogger` with context and correlation ID (if present). Never log secrets, tokens, private keys, or user PII.
 
 ## Security
@@ -90,7 +97,7 @@
 ## Git & Monorepo
 - Always use PNPM workspace syntax (`pnpm --filter @eudiplo/...`).
 - New shared logic must go into `packages/`, not copied across apps.
-- Tests are placed in `apps/backend/test/` as `*.e2e-spec.ts` files (not co-located with source).
+- Backend unit/application tests are co-located with source as `*.spec.ts`; E2E tests live in `apps/backend/test/` as `*.e2e-spec.ts`. Add focused tests and incremental boundary coverage with each migrated slice.
 - Use **conventional commits** (`feat:`, `fix:`, `docs:`, etc.). Semantic-release uses these to determine version bumps.
 - **Breaking changes**: Add a `BREAKING CHANGE:` footer in the commit message body **and** fill in the "Breaking Changes" section of the PR description. The PR description is the primary source for generating migration guides — describe _what_ changed and _how to migrate_.
 - When creating a PR that contains breaking changes, add the `breaking-change` label.
@@ -111,7 +118,7 @@
 - Telemetry (metrics, traces, logs) is handled via **OpenTelemetry** using `nestjs-otel` and the `@opentelemetry/sdk-node`.
 - The OTel SDK is bootstrapped in `apps/backend/src/tracing.ts` **before** NestJS starts. All signals are exported via OTLP to an OpenTelemetry Collector.
 - `OpenTelemetryModule` is registered globally in `CoreModule` — do not import it in feature modules.
-- For custom metrics, inject `MetricService` from `nestjs-otel` and use `getCounter()`, `getHistogram()`, or `getUpDownCounter()`. Never use `prom-client` directly.
+- For custom metrics, inject `MetricService` from `nestjs-otel` in an adapter or legacy service (not in `application/` or `domain/`, where a metrics port is used instead) and use `getCounter()`, `getHistogram()`, or `getUpDownCounter()`. Never use `prom-client` directly.
 - HTTP metrics and traces are auto-instrumented — no manual instrumentation needed for request/response tracking.
 - Logs are auto-correlated with traces via `nestjs-pino` + the Pino OTel instrumentation (trace_id/span_id injected automatically).
 - The monitoring stack (OTel Collector → Prometheus / Tempo / Loki → Grafana) lives in [monitor/](../monitor).
@@ -132,17 +139,16 @@
 - [apps/client/](../apps/client) — Angular UI
 - [deployment/](../deployment) — Docker configs
 - [monitor/](../monitor) — Monitoring stack
-- [docs/](../docs) — Documentation
+- [apps/docs/](../apps/docs) — Documentation
 
 ## Boilerplate Reference
 
-**NestJS module structure:**
+**NestJS module structure** (administrative CRUD; protocol/trust code adds `application/`, `domain/`, `ports/`, `adapters/` as described in the backend architecture):
 
 ```text
 feature/
   dto/
   entities/
-  exceptions/
   feature.module.ts
   feature.controller.ts
   feature.service.ts

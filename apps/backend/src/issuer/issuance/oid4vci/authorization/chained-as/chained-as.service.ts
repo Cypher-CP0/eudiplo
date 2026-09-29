@@ -1,28 +1,32 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { HttpService } from "@nestjs/axios";
 import {
     BadRequestException,
+    Inject,
     Injectable,
     Logger,
     NotFoundException,
     Optional,
 } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
-import { InjectRepository } from "@nestjs/typeorm";
 import { decodeJwt } from "jose";
 import { MetricService, TraceService } from "nestjs-otel";
-import { firstValueFrom } from "rxjs";
-import { LessThan, Repository } from "typeorm";
 import { v4 } from "uuid";
 import { KeyChainService } from "../../../../../crypto/key/key-chain.service.js";
-import { SessionService } from "../../../../../session/session.service.js";
+import { SessionStore } from "../../../../../session/application/session-store.js";
 import { FederationTrustService } from "../../../../../trust/federation-trust.service.js";
 import { FederationTrustSource } from "../../../../../trust/types.js";
 import { WalletAttestationService } from "../../../../../trust/wallet-attestation.service.js";
 import type { TrustListRef } from "../../../../../verifier/presentations/entities/presentation-config.entity.js";
-import { AuthorizationIdentity } from "../../../../configuration/credentials/dto/authorization-identity.js";
+import { AuthorizationIdentity } from "../../../../configuration/credentials/domain/authorization-identity.js";
 import type { ChainedAsConfig } from "../../../../configuration/issuance/dto/chained-as-config.dto.js";
 import { IssuanceService } from "../../../../configuration/issuance/issuance.service.js";
+import {
+    OID4VCI_SETTINGS,
+    type Oid4vciSettings,
+} from "../../oid4vci-settings.js";
+import {
+    CHAINED_AS_SESSION_REPOSITORY,
+    type ChainedAsSessionRepository,
+} from "../ports/chained-as-session.repository.js";
 import {
     assertTokenRequestSessionValid,
     buildAccessTokenPayload,
@@ -33,7 +37,7 @@ import {
     buildWalletAttestationMetadata,
     ChainedAsParRequestDto,
     ChainedAsParResponseDto,
-    ChainedAsSessionEntity,
+    type ChainedAsSession,
     ChainedAsSessionStatus,
     ChainedAsTokenRequestDto,
     ChainedAsTokenResponseDto,
@@ -43,20 +47,15 @@ import {
     resolveTokenBinding,
     resolveWalletAttestationPolicy,
 } from "../shared/index.js";
-
-/**
- * Upstream OIDC discovery document structure.
- */
-interface OidcDiscoveryDocument {
-    issuer: string;
-    authorization_endpoint: string;
-    token_endpoint: string;
-    userinfo_endpoint?: string;
-    jwks_uri: string;
-    scopes_supported?: string[];
-    response_types_supported?: string[];
-    token_endpoint_auth_methods_supported?: string[];
-}
+import {
+    OIDC_DISCOVERY_RESOLVER,
+    type OidcDiscoveryDocument,
+    type OidcDiscoveryResolver,
+} from "./ports/oidc-discovery-resolver.js";
+import {
+    OIDC_TOKEN_EXCHANGER,
+    type OidcTokenExchanger,
+} from "./ports/oidc-token-exchanger.js";
 
 /**
  * Service implementing Chained Authorization Server functionality.
@@ -103,16 +102,19 @@ export class ChainedAsService {
     private readonly AUTH_CODE_LIFETIME_SECONDS = 300;
 
     constructor(
-        private readonly configService: ConfigService,
-        private readonly httpService: HttpService,
+        @Inject(OID4VCI_SETTINGS) private readonly settings: Oid4vciSettings,
+        @Inject(OIDC_DISCOVERY_RESOLVER)
+        private readonly oidcDiscoveryResolver: OidcDiscoveryResolver,
+        @Inject(OIDC_TOKEN_EXCHANGER)
+        private readonly oidcTokenExchanger: OidcTokenExchanger,
         private readonly keyChainService: KeyChainService,
-        private readonly sessionService: SessionService,
+        private readonly sessionStore: SessionStore,
         private readonly issuanceService: IssuanceService,
         private readonly federationTrustService: FederationTrustService,
         private readonly walletAttestationService: WalletAttestationService,
         private readonly traceService: TraceService,
-        @InjectRepository(ChainedAsSessionEntity)
-        private readonly sessionRepository: Repository<ChainedAsSessionEntity>,
+        @Inject(CHAINED_AS_SESSION_REPOSITORY)
+        private readonly sessionRepository: ChainedAsSessionRepository,
         @Optional() private readonly metricService?: MetricService,
     ) {
         this.discoveryHitsCounter = this.metricService?.getCounter(
@@ -149,7 +151,7 @@ export class ChainedAsService {
      * Get the base URL for this tenant's Chained AS.
      */
     private getChainedAsBaseUrl(tenantId: string): string {
-        const publicUrl = this.configService.getOrThrow<string>("PUBLIC_URL");
+        const publicUrl = this.settings.publicUrl;
         return `${publicUrl}/issuers/${tenantId}/chained-as`;
     }
 
@@ -253,15 +255,10 @@ export class ChainedAsService {
         this.discoveryMissesCounter?.add(1, { issuer });
 
         const fetchPromise = (async (): Promise<OidcDiscoveryDocument> => {
-            const wellKnownUrl = `${issuer.replace(/\/$/, "")}/.well-known/openid-configuration`;
             this.discoveryFetchesCounter?.add(1, { issuer });
 
             try {
-                const response = await firstValueFrom(
-                    this.httpService.get<OidcDiscoveryDocument>(wellKnownUrl),
-                );
-
-                const doc = response.data;
+                const doc = await this.oidcDiscoveryResolver.resolve(issuer);
                 // Cache for 5 minutes
                 this.discoveryCache.set(issuer, {
                     doc,
@@ -274,12 +271,12 @@ export class ChainedAsService {
                 if (cached && now - cached.fetchedAt <= 60 * 60 * 1000) {
                     this.discoveryStaleCounter?.add(1, { issuer });
                     this.logger.warn(
-                        `Failed to fetch OIDC discovery from ${wellKnownUrl}, returning stale discovery document: ${String(error)}`,
+                        `Failed to fetch OIDC discovery from ${issuer}, returning stale discovery document: ${String(error)}`,
                     );
                     return cached.doc;
                 }
                 this.logger.error(
-                    `Failed to fetch OIDC discovery from ${wellKnownUrl}`,
+                    `Failed to fetch OIDC discovery from ${issuer}`,
                     error,
                 );
                 throw new BadRequestException(
@@ -373,7 +370,7 @@ export class ChainedAsService {
         if (issuerState) {
             // Verify the issuer_state exists in our session store
             try {
-                await this.sessionService.get(issuerState);
+                await this.sessionStore.getForTenant(tenantId, issuerState);
             } catch {
                 throw new BadRequestException("Invalid issuer_state");
             }
@@ -449,13 +446,11 @@ export class ChainedAsService {
         const sessionId = requestUri.slice(this.REQUEST_URI_PREFIX.length);
 
         // Find the session
-        const session = await this.sessionRepository.findOne({
-            where: {
-                id: sessionId,
-                tenantId,
-                status: ChainedAsSessionStatus.PENDING_AUTHORIZE,
-            },
-        });
+        const session = await this.sessionRepository.findForTenant(
+            tenantId,
+            sessionId,
+            ChainedAsSessionStatus.PENDING_AUTHORIZE,
+        );
 
         if (!session) {
             throw new BadRequestException("Invalid or expired request_uri");
@@ -536,9 +531,10 @@ export class ChainedAsService {
         errorDescription?: string,
     ): Promise<string> {
         this.logger.warn(`Upstream OIDC error: ${error} - ${errorDescription}`);
-        const session = await this.sessionRepository.findOne({
-            where: { tenantId, upstreamState: state },
-        });
+        const session = await this.sessionRepository.findByUpstreamState(
+            tenantId,
+            state,
+        );
         if (session) {
             session.status = ChainedAsSessionStatus.EXPIRED;
             await this.sessionRepository.save(session);
@@ -556,45 +552,31 @@ export class ChainedAsService {
      * Exchange authorization code with upstream OIDC provider.
      */
     private async exchangeUpstreamCode(
-        session: ChainedAsSessionEntity,
+        session: ChainedAsSession,
         code: string,
         config: ChainedAsConfig,
         discovery: OidcDiscoveryDocument,
         callbackUrl: string,
     ): Promise<void> {
-        const tokenResponse = await firstValueFrom(
-            this.httpService.post(
-                discovery.token_endpoint,
-                new URLSearchParams({
-                    grant_type: "authorization_code",
-                    code,
-                    redirect_uri: callbackUrl,
-                    client_id: config.upstream!.clientId,
-                    client_secret: config.upstream!.clientSecret || "",
-                    code_verifier: session.upstreamCodeVerifier || "",
-                }).toString(),
-                {
-                    headers: {
-                        "Content-Type": "application/x-www-form-urlencoded",
-                    },
-                },
-            ),
-        );
+        const tokens = await this.oidcTokenExchanger.exchange({
+            tokenEndpoint: discovery.token_endpoint,
+            code,
+            redirectUri: callbackUrl,
+            clientId: config.upstream!.clientId,
+            clientSecret: config.upstream!.clientSecret,
+            codeVerifier: session.upstreamCodeVerifier,
+        });
 
-        const tokens = tokenResponse.data as {
-            access_token: string;
-            id_token?: string;
-        };
-
-        if (tokens.id_token) {
-            session.upstreamIdTokenClaims = decodeJwt(
-                tokens.id_token,
-            ) as Record<string, unknown>;
+        if (tokens.idToken) {
+            session.upstreamIdTokenClaims = decodeJwt(tokens.idToken) as Record<
+                string,
+                unknown
+            >;
         }
 
         try {
             session.upstreamAccessTokenClaims = decodeJwt(
-                tokens.access_token,
+                tokens.accessToken,
             ) as Record<string, unknown>;
         } catch {
             session.upstreamAccessTokenClaims = {};
@@ -621,13 +603,11 @@ export class ChainedAsService {
             );
         }
 
-        const session = await this.sessionRepository.findOne({
-            where: {
-                tenantId,
-                upstreamState: state,
-                status: ChainedAsSessionStatus.PENDING_UPSTREAM_CALLBACK,
-            },
-        });
+        const session = await this.sessionRepository.findByUpstreamState(
+            tenantId,
+            state,
+            ChainedAsSessionStatus.PENDING_UPSTREAM_CALLBACK,
+        );
 
         if (!session) {
             throw new BadRequestException("Invalid or expired callback state");
@@ -699,14 +679,14 @@ export class ChainedAsService {
      */
     private buildTokenPayload(
         tenantId: string,
-        session: ChainedAsSessionEntity,
+        session: ChainedAsSession,
         tokenLifetime: number,
         jti: string,
         dpopJkt?: string,
     ): Record<string, unknown> {
         const payload = buildAccessTokenPayload({
             issuer: this.getChainedAsBaseUrl(tenantId),
-            audience: `${this.configService.getOrThrow<string>("PUBLIC_URL")}/issuers/${tenantId}`,
+            audience: `${this.settings.publicUrl}/issuers/${tenantId}`,
             session,
             tokenLifetime,
             jti,
@@ -869,7 +849,7 @@ export class ChainedAsService {
     async getMetadata(tenantId: string): Promise<Record<string, unknown>> {
         const config = await this.getChainedAsConfig(tenantId);
         const baseUrl = this.getChainedAsBaseUrl(tenantId);
-        const publicUrl = this.configService.getOrThrow<string>("PUBLIC_URL");
+        const publicUrl = this.settings.publicUrl;
         const issuanceConfig =
             await this.issuanceService.getIssuanceConfiguration(tenantId);
         const walletAttestationPolicy = resolveWalletAttestationPolicy(
@@ -899,25 +879,25 @@ export class ChainedAsService {
      * Clean up expired sessions.
      */
     async cleanupExpiredSessions(): Promise<number> {
-        const result = await this.sessionRepository.delete({
-            expiresAt: LessThan(new Date()),
-        });
-        return result.affected || 0;
+        return this.sessionRepository.deleteExpired(new Date());
     }
 
     /**
      * Get upstream identity claims by issuer state.
      * Used to retrieve the upstream OIDC provider's claims for webhook calls.
      *
+     * @param tenantId Tenant of the issuance session
      * @param issuerState The issuer_state from the credential offer session
      * @returns Upstream identity with issuer, subject, and all token claims, or undefined if not found
      */
     async getUpstreamIdentityByIssuerState(
+        tenantId: string,
         issuerState: string,
     ): Promise<AuthorizationIdentity | undefined> {
-        const chainedSession = await this.sessionRepository.findOne({
-            where: { issuerState },
-        });
+        const chainedSession = await this.sessionRepository.findByIssuerState(
+            tenantId,
+            issuerState,
+        );
 
         if (
             !chainedSession?.upstreamIdTokenClaims &&

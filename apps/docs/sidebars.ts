@@ -135,6 +135,8 @@ const sidebars: SidebarsConfig = {
         'contributing/development-setup',
         'contributing/repository-structure',
         'contributing/backend',
+        'architecture/backend-architecture',
+        'architecture/refactoring-plan',
         'contributing/client',
         'contributing/cli',
         'contributing/testing',

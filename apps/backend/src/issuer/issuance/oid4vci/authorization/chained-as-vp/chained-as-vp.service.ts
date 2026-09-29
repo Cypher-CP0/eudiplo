@@ -1,22 +1,29 @@
 import { randomBytes } from "node:crypto";
 import {
     BadRequestException,
+    Inject,
     Injectable,
     Logger,
     NotFoundException,
 } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
-import { InjectRepository } from "@nestjs/typeorm";
 import { TraceService } from "nestjs-otel";
-import { Repository } from "typeorm";
 import { v4 } from "uuid";
 import { KeyChainService } from "../../../../../crypto/key/key-chain.service.js";
-import { SessionStatus } from "../../../../../session/entities/session.entity.js";
-import { SessionService } from "../../../../../session/session.service.js";
+import { CreateSession } from "../../../../../session/application/create-session.js";
+import { SessionStore } from "../../../../../session/application/session-store.js";
+import { SessionStatus } from "../../../../../session/domain/session-state.js";
 import { WalletAttestationService } from "../../../../../trust/wallet-attestation.service.js";
 import { Oid4vpService } from "../../../../../verifier/oid4vp/oid4vp.service.js";
 import type { ChainedAsConfig } from "../../../../configuration/issuance/dto/chained-as-config.dto.js";
 import { IssuanceService } from "../../../../configuration/issuance/issuance.service.js";
+import {
+    OID4VCI_SETTINGS,
+    type Oid4vciSettings,
+} from "../../oid4vci-settings.js";
+import {
+    CHAINED_AS_SESSION_REPOSITORY,
+    type ChainedAsSessionRepository,
+} from "../ports/chained-as-session.repository.js";
 import {
     assertTokenRequestSessionValid,
     buildAccessTokenPayload,
@@ -27,7 +34,6 @@ import {
     buildWalletAttestationMetadata,
     ChainedAsParRequestDto,
     ChainedAsParResponseDto,
-    ChainedAsSessionEntity,
     ChainedAsSessionStatus,
     ChainedAsTokenRequestDto,
     ChainedAsTokenResponseDto,
@@ -46,19 +52,20 @@ export class ChainedAsVpService {
     private readonly AUTH_CODE_LIFETIME_SECONDS = 300;
 
     constructor(
-        private readonly configService: ConfigService,
+        @Inject(OID4VCI_SETTINGS) private readonly settings: Oid4vciSettings,
         private readonly keyChainService: KeyChainService,
-        private readonly sessionService: SessionService,
+        private readonly createSession: CreateSession,
+        private readonly sessionStore: SessionStore,
         private readonly issuanceService: IssuanceService,
         private readonly walletAttestationService: WalletAttestationService,
         private readonly traceService: TraceService,
         private readonly oid4vpService: Oid4vpService,
-        @InjectRepository(ChainedAsSessionEntity)
-        private readonly sessionRepository: Repository<ChainedAsSessionEntity>,
+        @Inject(CHAINED_AS_SESSION_REPOSITORY)
+        private readonly sessionRepository: ChainedAsSessionRepository,
     ) {}
 
     private getChainedAsVpBaseUrl(tenantId: string): string {
-        const publicUrl = this.configService.getOrThrow<string>("PUBLIC_URL");
+        const publicUrl = this.settings.publicUrl;
         return `${publicUrl}/issuers/${tenantId}/chained-as-vp`;
     }
 
@@ -121,7 +128,7 @@ export class ChainedAsVpService {
         let issuerState = request.issuer_state;
         if (issuerState) {
             try {
-                await this.sessionService.get(issuerState);
+                await this.sessionStore.getForTenant(tenantId, issuerState);
             } catch {
                 throw new BadRequestException("Invalid issuer_state");
             }
@@ -184,13 +191,11 @@ export class ChainedAsVpService {
         }
 
         const sessionId = requestUri.slice(this.REQUEST_URI_PREFIX.length);
-        const session = await this.sessionRepository.findOne({
-            where: {
-                id: sessionId,
-                tenantId,
-                status: ChainedAsSessionStatus.PENDING_AUTHORIZE,
-            },
-        });
+        const session = await this.sessionRepository.findForTenant(
+            tenantId,
+            sessionId,
+            ChainedAsSessionStatus.PENDING_AUTHORIZE,
+        );
 
         if (!session) {
             throw new BadRequestException("Invalid or expired request_uri");
@@ -217,9 +222,9 @@ export class ChainedAsVpService {
         });
 
         const callbackUrl = `${this.getChainedAsVpBaseUrl(tenantId)}/vp-callback?cas=${encodeURIComponent(session.id)}`;
-        const publicUrl = this.configService.getOrThrow<string>("PUBLIC_URL");
+        const publicUrl = this.settings.publicUrl;
 
-        await this.sessionService.create({
+        await this.createSession.execute({
             id: session.id,
             tenantId,
             requestId: config.vp.presentationConfigId,
@@ -251,13 +256,11 @@ export class ChainedAsVpService {
         error?: string,
         errorDescription?: string,
     ): Promise<string> {
-        const session = await this.sessionRepository.findOne({
-            where: {
-                id: chainedAsSessionId,
-                tenantId,
-                status: ChainedAsSessionStatus.PENDING_VP_CALLBACK,
-            },
-        });
+        const session = await this.sessionRepository.findForTenant(
+            tenantId,
+            chainedAsSessionId,
+            ChainedAsSessionStatus.PENDING_VP_CALLBACK,
+        );
 
         if (!session) {
             throw new BadRequestException(
@@ -276,7 +279,10 @@ export class ChainedAsVpService {
             );
         }
 
-        const verifierSession = await this.sessionService.get(session.id);
+        const verifierSession = await this.sessionStore.getForTenant(
+            session.tenantId,
+            session.id,
+        );
         if (
             verifierSession.status !== SessionStatus.Completed ||
             !responseCode ||
@@ -293,9 +299,13 @@ export class ChainedAsVpService {
         }
 
         if (session.issuerState && verifierSession.credentials) {
-            await this.sessionService.add(session.issuerState, {
-                credentials: verifierSession.credentials as any,
-            });
+            await this.sessionStore.updateForTenant(
+                session.tenantId,
+                session.issuerState,
+                {
+                    credentials: verifierSession.credentials as any,
+                },
+            );
         }
 
         const authorizationCode = randomBytes(32).toString("base64url");
@@ -369,7 +379,7 @@ export class ChainedAsVpService {
         const jti = v4();
         const tokenPayload = buildAccessTokenPayload({
             issuer: this.getChainedAsVpBaseUrl(tenantId),
-            audience: `${this.configService.getOrThrow<string>("PUBLIC_URL")}/issuers/${tenantId}`,
+            audience: `${this.settings.publicUrl}/issuers/${tenantId}`,
             session,
             tokenLifetime,
             jti,
@@ -437,7 +447,7 @@ export class ChainedAsVpService {
     async getMetadata(tenantId: string): Promise<Record<string, unknown>> {
         const config = await this.getChainedAsVpConfig(tenantId);
         const baseUrl = this.getChainedAsVpBaseUrl(tenantId);
-        const publicUrl = this.configService.getOrThrow<string>("PUBLIC_URL");
+        const publicUrl = this.settings.publicUrl;
         const issuanceConfig =
             await this.issuanceService.getIssuanceConfiguration(tenantId);
         const walletAttestationPolicy = resolveWalletAttestationPolicy(

@@ -117,6 +117,10 @@ See [.devcontainer/README.md](.devcontainer/README.md) for more details.
 
 ---
 
+## Backend Architecture
+
+See the [Backend Development guide](apps/docs/docs/contributing/backend.md), the [target architecture](apps/docs/docs/architecture/backend-architecture.md) (where code goes, reference implementations) and the [refactoring plan](apps/docs/docs/architecture/refactoring-plan.md) (status, open findings, and how to continue the migration). Pick one bounded slice before implementation. Run the backend E2E suite locally with `pnpm --filter @eudiplo/backend test:e2e:local` ([E2E testing](apps/docs/docs/contributing/e2e-testing.md)).
+
 ## Code Quality
 
 This project uses [Biome](https://biomejs.dev/) for code formatting and linting:

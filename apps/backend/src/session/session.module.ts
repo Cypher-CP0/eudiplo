@@ -1,17 +1,50 @@
 import { Module } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { AuthModule } from "../auth/auth.module.js";
 import { TenantEntity } from "../auth/tenant/entities/tenant.entity.js";
 import { StatusListModule } from "../issuer/status-list/status-list.module.js";
+import { NestSessionEventPublisher } from "./adapters/nest-session-event-publisher.js";
+import { OtelSessionMetrics } from "./adapters/otel-session-metrics.js";
+import {
+    SESSION_MAINTENANCE_SETTINGS,
+    SessionMaintenanceJob,
+} from "./adapters/session-maintenance.job.js";
+import { TypeOrmSessionRepository } from "./adapters/typeorm-session.repository.js";
+import { TypeOrmSessionRetentionPolicies } from "./adapters/typeorm-session-retention-policies.js";
+import { ChangeSessionState } from "./application/change-session-state.js";
+import { CleanupSessions } from "./application/cleanup-sessions.js";
+import { CreateSession } from "./application/create-session.js";
+import { InitializeSessionMetrics } from "./application/initialize-session-metrics.js";
+import { RecordFailedTxCodeAttempt } from "./application/record-failed-tx-code-attempt.js";
+import { ResolveExternalAuthorizationSession } from "./application/resolve-external-authorization-session.js";
+import { SessionStore } from "./application/session-store.js";
+import { SessionCleanupMode } from "./domain/session-retention.js";
 import { Session } from "./entities/session.entity.js";
 import { SessionLogEntry } from "./entities/session-log-entry.entity.js";
 import { SessionLoggingModule } from "./logging/session-logging.module.js";
+import {
+    SESSION_REPOSITORY,
+    type SessionRepository,
+} from "./ports/session.repository.js";
+import {
+    SESSION_EVENT_PUBLISHER,
+    type SessionEventPublisher,
+} from "./ports/session-event-publisher.js";
+import {
+    SESSION_METRICS,
+    type SessionMetrics,
+} from "./ports/session-metrics.js";
+import {
+    SESSION_RETENTION_POLICIES,
+    type SessionRetentionPolicies,
+} from "./ports/session-retention-policies.js";
 import { SessionController } from "./session.controller.js";
-import { SessionService } from "./session.service.js";
 import { SessionConfigController } from "./session-config.controller.js";
 import { SessionConfigService } from "./session-config.service.js";
 import { SessionEventsController } from "./session-events.controller.js";
 import { SessionEventsService } from "./session-events.service.js";
+import { SESSION_SETTINGS, type SessionSettings } from "./session-settings.js";
 
 /**
  * SessionModule is responsible for managing user sessions.
@@ -23,9 +56,118 @@ import { SessionEventsService } from "./session-events.service.js";
         SessionLoggingModule,
         AuthModule,
     ],
-    providers: [SessionService, SessionConfigService, SessionEventsService],
+    providers: [
+        {
+            provide: CreateSession,
+            inject: [SESSION_REPOSITORY, SESSION_METRICS],
+            useFactory: (
+                sessions: SessionRepository,
+                metrics: SessionMetrics,
+            ) => new CreateSession(sessions, metrics),
+        },
+        {
+            provide: SessionStore,
+            inject: [SESSION_REPOSITORY],
+            useFactory: (sessions: SessionRepository) =>
+                new SessionStore(sessions),
+        },
+        {
+            provide: ResolveExternalAuthorizationSession,
+            inject: [SESSION_REPOSITORY],
+            useFactory: (sessions: SessionRepository) =>
+                new ResolveExternalAuthorizationSession(sessions),
+        },
+        {
+            provide: RecordFailedTxCodeAttempt,
+            inject: [SESSION_REPOSITORY],
+            useFactory: (sessions: SessionRepository) =>
+                new RecordFailedTxCodeAttempt(sessions),
+        },
+        {
+            provide: SESSION_RETENTION_POLICIES,
+            useClass: TypeOrmSessionRetentionPolicies,
+        },
+        {
+            provide: CleanupSessions,
+            inject: [
+                SESSION_REPOSITORY,
+                SESSION_RETENTION_POLICIES,
+                ChangeSessionState,
+                SESSION_SETTINGS,
+            ],
+            useFactory: (
+                sessions: SessionRepository,
+                policies: SessionRetentionPolicies,
+                changeState: ChangeSessionState,
+                settings: SessionSettings,
+            ) =>
+                new CleanupSessions(sessions, policies, changeState, {
+                    ttlSeconds: settings.defaultTtlSeconds,
+                    cleanupMode: settings.defaultCleanupMode,
+                }),
+        },
+        {
+            provide: InitializeSessionMetrics,
+            inject: [
+                SESSION_REPOSITORY,
+                SESSION_RETENTION_POLICIES,
+                SESSION_METRICS,
+            ],
+            useFactory: (
+                sessions: SessionRepository,
+                policies: SessionRetentionPolicies,
+                metrics: SessionMetrics,
+            ) => new InitializeSessionMetrics(sessions, policies, metrics),
+        },
+        SessionMaintenanceJob,
+        {
+            provide: SESSION_MAINTENANCE_SETTINGS,
+            inject: [ConfigService],
+            useFactory: (config: ConfigService) => ({
+                cleanupIntervalMs:
+                    config.getOrThrow<number>("SESSION_TIDY_UP_INTERVAL") *
+                    1000,
+            }),
+        },
+        {
+            provide: SESSION_EVENT_PUBLISHER,
+            useClass: NestSessionEventPublisher,
+        },
+        { provide: SESSION_METRICS, useClass: OtelSessionMetrics },
+        {
+            provide: ChangeSessionState,
+            inject: [
+                SESSION_REPOSITORY,
+                SESSION_EVENT_PUBLISHER,
+                SESSION_METRICS,
+            ],
+            useFactory: (
+                repository: SessionRepository,
+                events: SessionEventPublisher,
+                metrics: SessionMetrics,
+            ) => new ChangeSessionState(repository, events, metrics),
+        },
+        SessionConfigService,
+        {
+            provide: SESSION_SETTINGS,
+            inject: [ConfigService],
+            useFactory: (config: ConfigService) => ({
+                defaultTtlSeconds: config.getOrThrow<number>("SESSION_TTL"),
+                defaultCleanupMode:
+                    config.get<string>("SESSION_CLEANUP_MODE") === "anonymize"
+                        ? SessionCleanupMode.Anonymize
+                        : SessionCleanupMode.Full,
+            }),
+        },
+        SessionEventsService,
+        { provide: SESSION_REPOSITORY, useClass: TypeOrmSessionRepository },
+    ],
     exports: [
-        SessionService,
+        SessionStore,
+        CreateSession,
+        ChangeSessionState,
+        ResolveExternalAuthorizationSession,
+        RecordFailedTxCodeAttempt,
         SessionConfigService,
         SessionEventsService,
         SessionLoggingModule,

@@ -11,7 +11,7 @@ import {
 import * as x509 from "@peculiar/x509";
 import { Span } from "nestjs-otel";
 import { PinoLogger } from "nestjs-pino";
-import { VerificationProvenance } from "../../../../session/entities/session-outcome.js";
+import { VerificationProvenance } from "../../../../session/domain/session-outcome.js";
 import {
     isStatusListUnavailableError,
     resolveRevocationPolicy,
@@ -31,7 +31,7 @@ import { toProvenance } from "../verification-provenance.js";
 /**
  * Session data for the standard OID4VP flow (direct_post or direct_post.jwt).
  */
-export type MdocSessionDataOid4vp = {
+type MdocSessionDataOid4vp = {
     protocol: "openid4vp";
     nonce: string;
     responseMode: string;
@@ -45,7 +45,7 @@ export type MdocSessionDataOid4vp = {
  * Session data for OID4VP via DC API (openid4vp-v1-unsigned, response_mode=dc_api.jwt).
  * Uses OID4VPDCAPIHandover transcript: SHA256(CBOR([origin, nonce, jwkThumbprint?])).
  */
-export type MdocSessionDataDcApi = {
+type MdocSessionDataDcApi = {
     protocol: "dc_api";
     nonce: string;
     origin: string;

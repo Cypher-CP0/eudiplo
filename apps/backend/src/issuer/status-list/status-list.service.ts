@@ -1,13 +1,13 @@
 import { randomInt } from "node:crypto";
 import {
-    ConflictException,
     BadRequestException,
+    ConflictException,
+    Inject,
     Injectable,
     Logger,
     NotFoundException,
     ServiceUnavailableException,
 } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import { SignatureAlgorithm } from "@owf/cose";
 import {
@@ -37,8 +37,8 @@ import {
     ConfigImportOrchestratorService,
     ImportPhase,
 } from "../../platform/config-import/config-import-orchestrator.service.js";
-import { Session } from "../../session/entities/session.entity.js";
-import type { CredentialConfig } from "../configuration/credentials/entities/credential.entity.js";
+import type { SessionData as Session } from "../../session/domain/session-data.js";
+import type { CredentialConfiguration } from "../configuration/credentials/domain/credential-configuration.js";
 import { StatusListImportSchema } from "./dto/status-list.schema.js";
 import { StatusListImportDto } from "./dto/status-list-import.dto.js";
 import { StatusUpdateDto } from "./dto/status-update.dto.js";
@@ -46,7 +46,17 @@ import { ActiveCredentialSlot } from "./entities/active-credential-slot.entity.j
 import { StatusListEntity } from "./entities/status-list.entity.js";
 import { StatusMapping } from "./entities/status-mapping.entity.js";
 import { StatusListConfigService } from "./status-list-config.service.js";
+import {
+    STATUS_LIST_SETTINGS,
+    type StatusListSettings,
+} from "./status-list-settings.js";
 import { SubjectKeyService } from "./subject-key.service.js";
+
+/** The credential configuration fields that govern status entry allocation. */
+type StatusEntryPolicy = Pick<
+    CredentialConfiguration,
+    "activeCredentials" | "statusManagement"
+>;
 
 /**
  * Status list value meaning "revoked", per the convention documented on
@@ -68,6 +78,9 @@ interface AllocatedStatusEntry {
     uri: string;
 }
 
+/** Upper bound for status list capacity; each list is held in memory while it is created. */
+export const MAX_STATUS_LIST_CAPACITY = 1_000_000;
+
 @Injectable()
 export class StatusListService {
     private readonly logger = new Logger(StatusListService.name);
@@ -81,7 +94,8 @@ export class StatusListService {
     private readonly retryDelayMs = 100;
 
     constructor(
-        private readonly configService: ConfigService,
+        @Inject(STATUS_LIST_SETTINGS)
+        private readonly settings: StatusListSettings,
         private readonly certService: CertService,
         public readonly keyChainService: KeyChainService,
         private readonly dataSource: DataSource,
@@ -136,8 +150,7 @@ export class StatusListService {
     private async getEffectiveCapacity(tenantId: string): Promise<number> {
         const tenant = await this.tenantRepository.findOneBy({ id: tenantId });
         return (
-            tenant?.statusListConfig?.capacity ??
-            this.configService.getOrThrow<number>("STATUS_CAPACITY")
+            tenant?.statusListConfig?.capacity ?? this.settings.statusCapacity
         );
     }
 
@@ -146,10 +159,7 @@ export class StatusListService {
      */
     private async getEffectiveBits(tenantId: string): Promise<BitsPerStatus> {
         const tenant = await this.tenantRepository.findOneBy({ id: tenantId });
-        return (
-            tenant?.statusListConfig?.bits ??
-            this.configService.getOrThrow<BitsPerStatus>("STATUS_BITS")
-        );
+        return tenant?.statusListConfig?.bits ?? this.settings.statusBits;
     }
 
     /**
@@ -168,7 +178,7 @@ export class StatusListService {
      * Build the URI for a status list.
      */
     private buildStatusListUri(tenantId: string, listId: string): string {
-        const baseUrl = this.configService.getOrThrow<string>("PUBLIC_URL");
+        const baseUrl = this.settings.publicUrl;
         return `${baseUrl}/issuers/${tenantId}/status-management/status-list/${listId}`;
     }
 
@@ -178,7 +188,7 @@ export class StatusListService {
      * See RFC draft-ietf-oauth-status-list Section 9.
      */
     private buildAggregationUri(tenantId: string): string {
-        const baseUrl = this.configService.getOrThrow<string>("PUBLIC_URL");
+        const baseUrl = this.settings.publicUrl;
         return `${baseUrl}/issuers/${tenantId}/status-management/status-list-aggregation`;
     }
 
@@ -199,6 +209,17 @@ export class StatusListService {
     ): Promise<StatusListEntity> {
         const size =
             options?.capacity ?? (await this.getEffectiveCapacity(tenantId));
+        // The capacity comes from API input or tenant configuration and sizes
+        // in-memory arrays, so it must be bounded.
+        if (
+            !Number.isSafeInteger(size) ||
+            size < 1 ||
+            size > MAX_STATUS_LIST_CAPACITY
+        ) {
+            throw new BadRequestException(
+                `Status list capacity must be an integer between 1 and ${MAX_STATUS_LIST_CAPACITY}`,
+            );
+        }
         // create an empty array with the size
         const elements = new Array(size).fill(0).map(() => 0);
         // create a list of indexes and shuffle them using crypto-secure randomness
@@ -257,7 +278,7 @@ export class StatusListService {
             ? this.buildAggregationUri(entry.tenantId)
             : undefined;
         const list = new StatusList(entry.elements, entry.bits, aggregationUri);
-        const iss = `${this.configService.getOrThrow<string>("PUBLIC_URL")}`;
+        const iss = this.settings.publicUrl;
         const sub = this.buildStatusListUri(entry.tenantId, entry.id);
         const ttl = effectiveConfig.ttl!;
         const now = Math.floor(Date.now() / 1000);
@@ -566,7 +587,7 @@ export class StatusListService {
     async createEntry(
         session: Session,
         credentialConfigurationId: string,
-        credentialConfiguration?: CredentialConfig,
+        credentialConfiguration?: StatusEntryPolicy,
         issuanceSetId?: string,
     ): Promise<JWTwithStatusListPayload> {
         // Resolve the pseudonymous subject key when the active-credential-limit
@@ -646,7 +667,7 @@ export class StatusListService {
     private async resolveSubjectScopedKey(
         session: Session,
         credentialConfigurationId: string,
-        credentialConfiguration?: CredentialConfig,
+        credentialConfiguration?: StatusEntryPolicy,
     ): Promise<string | undefined> {
         const policy = credentialConfiguration?.activeCredentials;
         if (!policy?.enabled) {

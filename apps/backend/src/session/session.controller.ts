@@ -14,19 +14,20 @@ import { Secured } from "../auth/secure.decorator.js";
 import { Token, TokenPayload } from "../auth/token.decorator.js";
 import { StatusUpdateDto } from "../issuer/status-list/dto/status-update.dto.js";
 import { StatusListService } from "../issuer/status-list/status-list.service.js";
+import { SessionStore } from "./application/session-store.js";
+import type { SessionData } from "./domain/session-data.js";
 import { PaginatedSessionResponseDto } from "./dto/paginated-session-response.dto.js";
 import { SessionLogEntryResponseDto } from "./dto/session-log-entry-response.dto.js";
 import { SessionQueryDto } from "./dto/session-query.dto.js";
 import { Session } from "./entities/session.entity.js";
 import { SessionLogStoreService } from "./logging/session-log-store.service.js";
-import { SessionService } from "./session.service.js";
 
 @ApiTags("Session")
 @Secured([Role.IssuanceOffer, Role.PresentationRequest])
 @Controller("session")
 export class SessionController {
     constructor(
-        private readonly sessionService: SessionService,
+        private readonly sessions: SessionStore,
         private readonly statusListService: StatusListService,
         private readonly logStoreService: SessionLogStoreService,
     ) {}
@@ -41,7 +42,7 @@ export class SessionController {
         @Token() token: TokenPayload,
         @Query() query: SessionQueryDto,
     ): Promise<PaginatedSessionResponseDto> {
-        return this.sessionService.getAll(token.entity!.id, query);
+        return this.sessions.listForTenant(token.entity!.id, query);
     }
 
     /**
@@ -49,12 +50,13 @@ export class SessionController {
      * @param id - The identifier of the session.
      */
     @ApiParam({ name: "id", description: "The session ID", type: String })
+    @ApiResponse({ status: 200, type: Session })
     @Get(":id")
     getSession(
         @Param("id") id: string,
         @Token() token: TokenPayload,
-    ): Promise<Session> {
-        return this.sessionService.getBy({ id, tenantId: token.entity!.id });
+    ): Promise<SessionData> {
+        return this.sessions.getForTenant(token.entity!.id, id);
     }
 
     /**
@@ -70,7 +72,7 @@ export class SessionController {
         @Param("id") id: string,
         @Token() user: TokenPayload,
     ): Promise<void> {
-        return this.sessionService.delete(id, user.entity!.id);
+        return this.sessions.deleteForTenant(user.entity!.id, id);
     }
 
     /**
@@ -85,7 +87,7 @@ export class SessionController {
         @Param("id") id: string,
         @Token() token: TokenPayload,
     ): Promise<SessionLogEntryResponseDto[]> {
-        await this.sessionService.getBy({ id, tenantId: token.entity!.id });
+        await this.sessions.getForTenant(token.entity!.id, id);
         return this.logStoreService.findBySessionId(id);
     }
 

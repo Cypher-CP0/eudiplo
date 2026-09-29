@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { INestApplication } from "@nestjs/common";
 import {
     clientAuthenticationAnonymous,
+    createDpopHeadersForRequest,
     Jwk,
     JwtSignerJwk,
 } from "@openid4vc/oauth2";
@@ -18,10 +19,12 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import nock from "nock";
 import request from "supertest";
 import { App } from "supertest/types";
+import { DataSource } from "typeorm";
 import { Agent, setGlobalDispatcher } from "undici";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import { buildClaims } from "../../src/issuer/configuration/credentials/utils/derive.js";
 import { IssuanceDto } from "../../src/issuer/configuration/issuance/dto/issuance.dto.js";
+import { Session } from "../../src/session/entities/session.entity.js";
 import {
     callbacks,
     getSignJwtCallback,
@@ -77,7 +80,7 @@ describe("Issuance - Pre-authorized Code Flow", () => {
     });
 
     afterAll(async () => {
-        await app.close();
+        await app?.close();
     });
 
     test("pre authorized code flow", async () => {
@@ -167,6 +170,228 @@ describe("Issuance - Pre-authorized Code Flow", () => {
         );
         expect(notificationObj).toBeDefined();
         expect(notificationObj.event).toBe("credential_accepted");
+    });
+
+    test("rejects a replayed DPoP proof at the credential endpoint", async () => {
+        const offerResponse = await request(app.getHttpServer())
+            .post("/issuer/offer")
+            .trustLocalhost()
+            .set("Authorization", `Bearer ${authToken}`)
+            .send({
+                response_type: "uri",
+                credentialConfigurationIds: ["pid-no-key"],
+                flow: "pre_authorized_code",
+            })
+            .expect(201);
+
+        const holderKeyPair = await generateKeyPair("ES256", {
+            extractable: true,
+        });
+        const holderPrivateKeyJwk = await exportJWK(holderKeyPair.privateKey);
+        const holderPublicKeyJwk = await exportJWK(holderKeyPair.publicKey);
+        const signJwt = getSignJwtCallback([holderPrivateKeyJwk as Jwk]);
+        const holderSigner = {
+            method: "jwk",
+            alg: "ES256",
+            publicJwk: holderPublicKeyJwk,
+        } as JwtSignerJwk;
+
+        const client = new Openid4vciClient({
+            callbacks: {
+                ...callbacks,
+                clientAuthentication: clientAuthenticationAnonymous(),
+                signJwt,
+            },
+        });
+        const credentialOffer = await client.resolveCredentialOffer(
+            offerResponse.body.uri,
+        );
+        const issuerMetadata = await client.resolveIssuerMetadata(
+            credentialOffer.credential_issuer,
+        );
+        const { accessTokenResponse } =
+            await client.retrievePreAuthorizedCodeAccessTokenFromOffer({
+                credentialOffer,
+                issuerMetadata,
+                dpop: { signer: holderSigner },
+            });
+        expect(accessTokenResponse.token_type).toBe("DPoP");
+        const accessToken = accessTokenResponse.access_token;
+
+        const credentialEndpoint =
+            issuerMetadata.credentialIssuer.credential_endpoint;
+        const { DPoP: dpopProof } = await createDpopHeadersForRequest({
+            request: { method: "POST", url: credentialEndpoint },
+            signer: holderSigner,
+            accessToken,
+            callbacks: { ...callbacks, signJwt },
+        });
+
+        // Each request carries a fresh key proof, so only the DPoP proof repeats.
+        const credentialRequest = async () => {
+            const { c_nonce } = await client.requestNonce({ issuerMetadata });
+            const { jwt } = await client.createCredentialRequestJwtProof({
+                issuerMetadata,
+                signer: holderSigner,
+                clientId,
+                issuedAt: new Date(),
+                credentialConfigurationId:
+                    credentialOffer.credential_configuration_ids[0],
+                nonce: c_nonce,
+            });
+            return request(app.getHttpServer())
+                .post(new URL(credentialEndpoint).pathname)
+                .trustLocalhost()
+                .set("Authorization", `DPoP ${accessToken}`)
+                .set("DPoP", dpopProof)
+                .send({
+                    credential_configuration_id:
+                        credentialOffer.credential_configuration_ids[0],
+                    proofs: { jwt: [jwt] },
+                });
+        };
+
+        const first = await credentialRequest();
+        expect(first.status).toBe(200);
+        expect(first.body.credentials).toHaveLength(1);
+
+        const replay = await credentialRequest();
+        expect(replay.status).toBe(401);
+        expect(replay.headers["www-authenticate"]).toContain("DPoP");
+        expect(replay.body).toMatchObject({
+            error: "invalid_token",
+            error_description: expect.stringContaining("has already been used"),
+        });
+    });
+
+    test.each([
+        [
+            "notification",
+            { notification_id: "n", event: "credential_accepted" },
+        ],
+        ["deferred_credential", { transaction_id: "t" }],
+    ])(
+        "answers an invalid access token at the %s endpoint with 401",
+        async (endpoint, body) => {
+            const response = await request(app.getHttpServer())
+                .post(`/issuers/root/vci/${endpoint}`)
+                .trustLocalhost()
+                .set("Authorization", "Bearer not-a-valid-token")
+                .send(body);
+            expect(response.status).toBe(401);
+            expect(response.body).toMatchObject({ error: "invalid_token" });
+            expect(response.headers["www-authenticate"]).toBeDefined();
+        },
+    );
+
+    test("rejects a pre-authorized code after the session lifetime", async () => {
+        const offerResponse = await request(app.getHttpServer())
+            .post("/issuer/offer")
+            .trustLocalhost()
+            .set("Authorization", `Bearer ${authToken}`)
+            .send({
+                response_type: "uri",
+                credentialConfigurationIds: ["pid-no-key"],
+                flow: "pre_authorized_code",
+            })
+            .expect(201);
+
+        // Backdate the session beyond the default session TTL (24 h).
+        await app
+            .get(DataSource)
+            .getRepository(Session)
+            .update(offerResponse.body.session, {
+                createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
+            });
+
+        const client = new Openid4vciClient({
+            callbacks: {
+                ...callbacks,
+                clientAuthentication: clientAuthenticationAnonymous(),
+            },
+        });
+        const credentialOffer = await client.resolveCredentialOffer(
+            offerResponse.body.uri,
+        );
+        const issuerMetadata = await client.resolveIssuerMetadata(
+            credentialOffer.credential_issuer,
+        );
+        const error = await client
+            .retrievePreAuthorizedCodeAccessTokenFromOffer({
+                credentialOffer,
+                issuerMetadata,
+            })
+            .then(
+                () => undefined,
+                (err) => err.errorResponse,
+            );
+        expect(error).toMatchObject({
+            error: "invalid_grant",
+            error_description: "Expired 'pre-authorized_code' provided",
+        });
+    });
+
+    test("locks the pre-authorized code after repeated wrong tx_code attempts", async () => {
+        const offerResponse = await request(app.getHttpServer())
+            .post("/issuer/offer")
+            .trustLocalhost()
+            .set("Authorization", `Bearer ${authToken}`)
+            .send({
+                response_type: "uri",
+                credentialConfigurationIds: ["pid-no-key"],
+                flow: "pre_authorized_code",
+                tx_code: "1234",
+            })
+            .expect(201);
+
+        const client = new Openid4vciClient({
+            callbacks: {
+                ...callbacks,
+                clientAuthentication: clientAuthenticationAnonymous(),
+            },
+        });
+        const credentialOffer = await client.resolveCredentialOffer(
+            offerResponse.body.uri,
+        );
+        const issuerMetadata = await client.resolveIssuerMetadata(
+            credentialOffer.credential_issuer,
+        );
+        const tokenError = (txCode: string) =>
+            client
+                .retrievePreAuthorizedCodeAccessTokenFromOffer({
+                    credentialOffer,
+                    issuerMetadata,
+                    txCode,
+                })
+                .then(
+                    () => undefined,
+                    (error) => error.errorResponse,
+                );
+
+        const lockedDescription =
+            "Too many failed tx_code attempts. The pre-authorized code has been invalidated.";
+        const responses: Array<{ error?: string; error_description?: string }> =
+            [];
+        // The default limit is 5 attempts; stop as soon as the code is locked.
+        for (let attempt = 0; attempt < 10; attempt++) {
+            const response = await tokenError("0000");
+            responses.push(response);
+            if (response?.error_description === lockedDescription) break;
+        }
+
+        expect(responses.at(-1)).toMatchObject({
+            error: "invalid_grant",
+            error_description: lockedDescription,
+        });
+        expect(responses.length).toBeLessThan(10);
+        for (const response of responses.slice(0, -1)) {
+            expect(response).toMatchObject({ error: "invalid_grant" });
+        }
+        // Once locked, even the correct transaction code is rejected.
+        await expect(tokenError("1234")).resolves.toMatchObject({
+            error: "invalid_grant",
+            error_description: lockedDescription,
+        });
     });
 
     test("pre authorized code flow with attestation proof type", async () => {

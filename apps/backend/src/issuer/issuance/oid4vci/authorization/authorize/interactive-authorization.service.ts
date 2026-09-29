@@ -1,19 +1,21 @@
 import { randomUUID } from "node:crypto";
-import { BadRequestException, Injectable, Logger } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
-import { InjectRepository } from "@nestjs/typeorm";
+import {
+    BadRequestException,
+    Inject,
+    Injectable,
+    Logger,
+} from "@nestjs/common";
 import {
     type AuthorizationServerMetadata,
     Jwk,
     Oauth2ErrorCodes,
 } from "@openid4vc/oauth2";
-import type { Request } from "express";
-import { Repository } from "typeorm";
 import { v4 } from "uuid";
 import { CryptoService } from "../../../../../crypto/crypto.service.js";
-import { SessionService } from "../../../../../session/session.service.js";
+import { CreateSession } from "../../../../../session/application/create-session.js";
+import { SessionStore } from "../../../../../session/application/session-store.js";
 import { Oid4vpService } from "../../../../../verifier/oid4vp/oid4vp.service.js";
-import { PresentationsService } from "../../../../../verifier/presentations/presentations.service.js";
+import { PresentationConfigService } from "../../../../../verifier/presentations/configuration/presentation-config.service.js";
 import { CredentialsService } from "../../../../configuration/credentials/credentials.service.js";
 import {
     type IaeAction,
@@ -22,9 +24,19 @@ import {
 } from "../../../../configuration/credentials/entities/iae-action.dto.js";
 import { IssuanceService } from "../../../../configuration/issuance/issuance.service.js";
 import {
-    InteractiveAuthSessionEntity,
+    OID4VCI_SETTINGS,
+    type Oid4vciSettings,
+} from "../../oid4vci-settings.js";
+import type { Oid4vciRequestContext } from "../../request-context.js";
+import {
+    type InteractiveAuthSession,
     InteractiveAuthSessionStatus,
-} from "../../entities/interactive-auth-session.entity.js";
+} from "../domain/interactive-auth-session.js";
+import { checkPkce } from "../domain/pkce.js";
+import {
+    INTERACTIVE_AUTH_SESSION_REPOSITORY,
+    type InteractiveAuthSessionRepository,
+} from "../ports/interactive-auth-session.repository.js";
 import {
     InteractionType,
     InteractiveAuthorizationRequestDto,
@@ -90,15 +102,16 @@ export class InteractiveAuthorizationService {
     private readonly logger = new Logger(InteractiveAuthorizationService.name);
 
     constructor(
-        private readonly configService: ConfigService,
+        @Inject(OID4VCI_SETTINGS) private readonly settings: Oid4vciSettings,
         private readonly cryptoService: CryptoService,
-        private readonly sessionService: SessionService,
+        private readonly createSession: CreateSession,
+        private readonly sessionStore: SessionStore,
         private readonly issuanceService: IssuanceService,
         private readonly credentialsService: CredentialsService,
         private readonly oid4vpService: Oid4vpService,
-        private readonly presentationsService: PresentationsService,
-        @InjectRepository(InteractiveAuthSessionEntity)
-        private readonly authSessionRepository: Repository<InteractiveAuthSessionEntity>,
+        private readonly presentationConfigService: PresentationConfigService,
+        @Inject(INTERACTIVE_AUTH_SESSION_REPOSITORY)
+        private readonly authSessionRepository: InteractiveAuthSessionRepository,
     ) {}
 
     /**
@@ -109,7 +122,7 @@ export class InteractiveAuthorizationService {
     getAuthorizationServerMetadata(
         tenantId: string,
     ): AuthorizationServerMetadata {
-        const authServer = `${this.configService.getOrThrow<string>("PUBLIC_URL")}/issuers/${tenantId}`;
+        const authServer = `${this.settings.publicUrl}/issuers/${tenantId}`;
         return {
             issuer: authServer,
             authorization_endpoint: `${authServer}/authorize`,
@@ -129,7 +142,7 @@ export class InteractiveAuthorizationService {
      */
     parseRequest(
         body: InteractiveAuthorizationRequestDto,
-        req: Request,
+        req: Oid4vciRequestContext,
         tenantId: string,
     ): ParsedInteractiveAuthorizationRequest {
         // Check for client attestation headers
@@ -219,7 +232,7 @@ export class InteractiveAuthorizationService {
      */
     async handleRequest(
         body: InteractiveAuthorizationRequestDto,
-        req: Request,
+        req: Oid4vciRequestContext,
         tenantId: string,
         origin: string,
     ): Promise<InteractiveAuthorizationResponse> {
@@ -315,7 +328,7 @@ export class InteractiveAuthorizationService {
         const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
         // Store the auth session
-        await this.authSessionRepository.save({
+        await this.authSessionRepository.create({
             authSession,
             tenantId,
             clientId: request.client_id,
@@ -444,8 +457,7 @@ export class InteractiveAuthorizationService {
         if ("error" in validationResult) {
             return validationResult;
         }
-        const authSessionEntity =
-            validationResult as InteractiveAuthSessionEntity;
+        const authSessionEntity = validationResult as InteractiveAuthSession;
 
         // Parse session context
         const sessionContext = this.parseSessionContext(authSessionEntity);
@@ -484,12 +496,12 @@ export class InteractiveAuthorizationService {
     private async validateAuthSession(
         authSession: string,
         tenantId: string,
-    ): Promise<
-        InteractiveAuthSessionEntity | InteractiveAuthorizationResponse
-    > {
-        const authSessionEntity = await this.authSessionRepository.findOne({
-            where: { authSession, tenantId },
-        });
+    ): Promise<InteractiveAuthSession | InteractiveAuthorizationResponse> {
+        const authSessionEntity =
+            await this.authSessionRepository.findForTenant(
+                tenantId,
+                authSession,
+            );
 
         if (!authSessionEntity) {
             return {
@@ -499,7 +511,7 @@ export class InteractiveAuthorizationService {
         }
 
         if (authSessionEntity.expiresAt < new Date()) {
-            await this.authSessionRepository.remove(authSessionEntity);
+            await this.authSessionRepository.delete(authSessionEntity);
             return {
                 error: Oauth2ErrorCodes.InvalidRequest,
                 error_description: "Auth session has expired",
@@ -512,7 +524,7 @@ export class InteractiveAuthorizationService {
     /**
      * Parse session context data.
      */
-    private parseSessionContext(authSession: InteractiveAuthSessionEntity): {
+    private parseSessionContext(authSession: InteractiveAuthSession): {
         iaeActions: IaeAction[] | undefined;
         completedStepsData: any[];
         supportedTypes: InteractionType[];
@@ -535,7 +547,7 @@ export class InteractiveAuthorizationService {
      */
     private async processOpenid4vpFollow(
         openid4vpResponse: string,
-        authSession: InteractiveAuthSessionEntity,
+        authSession: InteractiveAuthSession,
         context: ReturnType<typeof this.parseSessionContext>,
         tenantId: string,
         origin: string,
@@ -561,7 +573,7 @@ export class InteractiveAuthorizationService {
      */
     private async processCodeVerifierFollow(
         codeVerifier: string,
-        authSession: InteractiveAuthSessionEntity,
+        authSession: InteractiveAuthSession,
         context: ReturnType<typeof this.parseSessionContext>,
         tenantId: string,
         origin: string,
@@ -582,7 +594,7 @@ export class InteractiveAuthorizationService {
      * Advance to next IAE action or complete the flow.
      */
     private async advanceOrComplete(
-        authSession: InteractiveAuthSessionEntity,
+        authSession: InteractiveAuthSession,
         context: ReturnType<typeof this.parseSessionContext>,
         tenantId: string,
         origin: string,
@@ -625,7 +637,7 @@ export class InteractiveAuthorizationService {
      */
     private async handleOpenid4vpResponse(
         openid4vpResponse: string,
-        authSession: InteractiveAuthSessionEntity,
+        authSession: InteractiveAuthSession,
     ): Promise<{ success: true } | InteractiveAuthorizationResponse> {
         try {
             const vpResponse = JSON.parse(openid4vpResponse);
@@ -639,9 +651,13 @@ export class InteractiveAuthorizationService {
             // If there's an issuer_state, also update the main session
             if (authSession.issuerState) {
                 try {
-                    await this.sessionService.add(authSession.issuerState, {
-                        credentials: vpResponse,
-                    });
+                    await this.sessionStore.updateForTenant(
+                        authSession.tenantId,
+                        authSession.issuerState,
+                        {
+                            credentials: vpResponse,
+                        },
+                    );
                 } catch (error) {
                     this.logger.warn(
                         "Could not update main session with presentation data:",
@@ -667,7 +683,7 @@ export class InteractiveAuthorizationService {
      */
     private async handleCodeVerifier(
         codeVerifier: string,
-        authSession: InteractiveAuthSessionEntity,
+        authSession: InteractiveAuthSession,
     ): Promise<{ success: true } | InteractiveAuthorizationResponse> {
         // Verify PKCE
         if (!authSession.codeChallenge) {
@@ -678,11 +694,12 @@ export class InteractiveAuthorizationService {
             };
         }
 
-        const verifierValid = await this.verifyPkce(
-            codeVerifier,
-            authSession.codeChallenge,
-            authSession.codeChallengeMethod,
-        );
+        // Unlike PAR, the IAE defaults to S256 and rejects unknown methods.
+        const method = authSession.codeChallengeMethod || "S256";
+        const verifierValid =
+            (method === "S256" || method === "plain") &&
+            checkPkce(authSession.codeChallenge, method, codeVerifier) ===
+                "valid";
 
         if (!verifierValid) {
             return {
@@ -750,7 +767,7 @@ export class InteractiveAuthorizationService {
             // Fall back to first available presentation configuration
             if (!configId) {
                 const configs =
-                    await this.presentationsService.getPresentationConfigs(
+                    await this.presentationConfigService.getPresentationConfigs(
                         tenantId,
                     );
                 configId = configs[0]?.id;
@@ -800,7 +817,7 @@ export class InteractiveAuthorizationService {
             );
 
             // Store the session for later use
-            await this.sessionService.create({
+            await this.createSession.execute({
                 id: authSession,
                 tenantId,
                 requestId: presentationConfigId,
@@ -851,13 +868,10 @@ export class InteractiveAuthorizationService {
         const expiresIn = 600; // 10 minutes
 
         // Store PAR data in the auth session (async)
-        this.authSessionRepository.update(
-            { authSession, tenantId },
-            {
-                requestUri,
-                parExpiresAt: new Date(Date.now() + expiresIn * 1000),
-            },
-        );
+        this.authSessionRepository.updateForTenant(tenantId, authSession, {
+            requestUri,
+            parExpiresAt: new Date(Date.now() + expiresIn * 1000),
+        });
 
         return {
             status: "require_interaction",
@@ -872,7 +886,7 @@ export class InteractiveAuthorizationService {
      * Issue an authorization code after successful interaction.
      */
     private async issueAuthorizationCode(
-        authSession: InteractiveAuthSessionEntity,
+        authSession: InteractiveAuthSession,
     ): Promise<InteractiveAuthorizationResponse> {
         const authorizationCode = randomUUID();
 
@@ -885,9 +899,13 @@ export class InteractiveAuthorizationService {
         // If there's an issuer_state, also update the main session
         if (authSession.issuerState) {
             try {
-                await this.sessionService.add(authSession.issuerState, {
-                    authorization_code: authorizationCode,
-                });
+                await this.sessionStore.updateForTenant(
+                    authSession.tenantId,
+                    authSession.issuerState,
+                    {
+                        authorization_code: authorizationCode,
+                    },
+                );
             } catch (error) {
                 this.logger.warn(
                     "Could not update main session with authorization code:",
@@ -903,26 +921,6 @@ export class InteractiveAuthorizationService {
     }
 
     /**
-     * Verify PKCE code_verifier against code_challenge.
-     */
-    private async verifyPkce(
-        codeVerifier: string,
-        codeChallenge: string,
-        method?: string,
-    ): Promise<boolean> {
-        if (method === "S256" || !method) {
-            const { createHash } = await import("node:crypto");
-            const hash = createHash("sha256")
-                .update(codeVerifier)
-                .digest("base64url");
-            return hash === codeChallenge;
-        } else if (method === "plain") {
-            return codeVerifier === codeChallenge;
-        }
-        return false;
-    }
-
-    /**
      * Mark a web authorization as completed.
      * Called when user completes web-based authorization.
      */
@@ -930,11 +928,11 @@ export class InteractiveAuthorizationService {
         authSession: string,
         tenantId: string,
     ): Promise<boolean> {
-        const result = await this.authSessionRepository.update(
-            { authSession, tenantId },
+        return this.authSessionRepository.updateForTenant(
+            tenantId,
+            authSession,
             { status: "web_auth_completed" },
         );
-        return (result.affected ?? 0) > 0;
     }
 
     /**

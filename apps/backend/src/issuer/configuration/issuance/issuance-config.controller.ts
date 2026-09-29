@@ -1,9 +1,11 @@
-import { Body, Controller, Get, Post, Req } from "@nestjs/common";
+import { Body, Controller, Get, Post } from "@nestjs/common";
 import { ApiBody, ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
-import { Request } from "express";
+import type { AuditLogRequestMeta } from "../../../audit-log/audit-log.service.js";
+import { AuditMeta } from "../../../audit-log/audit-log-context.util.js";
 import { Role } from "../../../auth/roles/role.enum.js";
 import { Secured } from "../../../auth/secure.decorator.js";
 import { Token, TokenPayload } from "../../../auth/token.decorator.js";
+import type { IssuanceConfiguration } from "./domain/issuance-configuration.js";
 import { IssuanceDto } from "./dto/issuance.dto.js";
 import { UpdateIssuanceDto } from "./dto/update-issuance.dto.js";
 import { IssuanceConfig } from "./entities/issuance-config.entity.js";
@@ -24,7 +26,7 @@ export class IssuanceConfigController {
     @ApiResponse({ status: 200, type: IssuanceConfig })
     getIssuanceConfigurations(
         @Token() user: TokenPayload,
-    ): Promise<IssuanceConfig> {
+    ): Promise<IssuanceConfiguration> {
         return this.issuanceService
             .getIssuanceConfiguration(user.entity!.id)
             .catch(() =>
@@ -47,13 +49,13 @@ export class IssuanceConfigController {
     storeIssuanceConfiguration(
         @Body() config: UpdateIssuanceDto,
         @Token() user: TokenPayload,
-        @Req() req: Request,
+        @AuditMeta() requestMeta: AuditLogRequestMeta,
     ) {
         return this.issuanceService.storeIssuanceConfiguration(
             user.entity!.id,
             config,
             user,
-            req,
+            requestMeta,
         );
     }
 
@@ -78,7 +80,7 @@ export class IssuanceConfigController {
     })
     reissueRegistrationCertificate(
         @Token() user: TokenPayload,
-    ): Promise<IssuanceConfig> {
+    ): Promise<IssuanceConfiguration> {
         return this.issuanceService.reissueRegistrationCertificate(
             user.entity!.id,
         );

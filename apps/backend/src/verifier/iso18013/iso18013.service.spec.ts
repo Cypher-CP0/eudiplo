@@ -27,7 +27,7 @@ describe("Iso18013Service.createOffer per-request webhook override", () => {
 
     beforeEach(() => {
         sessionCreate = vi.fn().mockResolvedValue(undefined);
-        const presentationsService = {
+        const presentationConfigService = {
             getPresentationConfig: vi.fn().mockResolvedValue({
                 dcql_query: {
                     credentials: [
@@ -48,7 +48,8 @@ describe("Iso18013Service.createOffer per-request webhook override", () => {
                 .fn()
                 .mockResolvedValue({ x: "x", y: "y" }),
         };
-        const sessionService = { create: sessionCreate };
+        const createSession = { execute: sessionCreate };
+        const sessionStore = { updateForTenant: vi.fn() };
         const webhookEndpointRepo = {
             findOneBy: vi.fn().mockResolvedValue({
                 url: "https://config.example/hook",
@@ -56,10 +57,11 @@ describe("Iso18013Service.createOffer per-request webhook override", () => {
         };
 
         service = new Iso18013Service(
-            presentationsService as any,
-            sessionService as any,
+            presentationConfigService as any,
+            createSession as any,
+            sessionStore as any,
             encryptionService as any,
-            {} as any, // mdocverifierService
+            {} as any, // credentialVerifierFormats
             {} as any, // webhookService
             {} as any, // auditLogService
             {} as any, // configService
@@ -67,6 +69,8 @@ describe("Iso18013Service.createOffer per-request webhook override", () => {
             {} as any, // keyChainService
             webhookEndpointRepo as any,
             {} as any, // logger
+            {} as any, // trustedAuthoritiesService
+            {} as any, // changeSessionState
         );
     });
 

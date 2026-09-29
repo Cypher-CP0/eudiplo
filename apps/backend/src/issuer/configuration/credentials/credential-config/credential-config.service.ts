@@ -1,10 +1,12 @@
-import { BadRequestException, Injectable, Logger } from "@nestjs/common";
-import { InjectRepository } from "@nestjs/typeorm";
-import { Request } from "express";
-import { Repository } from "typeorm";
+import {
+    BadRequestException,
+    Inject,
+    Injectable,
+    Logger,
+} from "@nestjs/common";
+import type { AuditLogRequestMeta } from "../../../../audit-log/audit-log.service.js";
 import { AuditLogService } from "../../../../audit-log/audit-log.service.js";
 import {
-    extractRequestMeta,
     getChangedFields,
     resolveAuditActor,
 } from "../../../../audit-log/audit-log-context.util.js";
@@ -18,11 +20,15 @@ import {
 } from "../../../../platform/config-import/config-import-orchestrator.service.js";
 import { loadConfigDto } from "../../../../shared/utils/config-file-loader.util.js";
 import { FilesService } from "../../../../storage/files.service.js";
-import { PresentationsService } from "../../../../verifier/presentations/presentations.service.js";
+import { PresentationConfigService } from "../../../../verifier/presentations/configuration/presentation-config.service.js";
+import type { CredentialConfiguration as CredentialConfig } from "../domain/credential-configuration.js";
 import { CredentialConfigCreate } from "../dto/credential-config-create.dto.js";
 import { CredentialConfigUpdate } from "../dto/credential-config-update.dto.js";
-import { CredentialConfig } from "../entities/credential.entity.js";
 import { IaeActionType } from "../entities/iae-action.dto.js";
+import {
+    CREDENTIAL_CONFIGURATION_REPOSITORY,
+    type CredentialConfigurationRepository,
+} from "../ports/credential-configuration.repository.js";
 import { CredentialConfigCreateSchema } from "../schemas/credential-config.schema.js";
 
 /**
@@ -34,16 +40,16 @@ export class CredentialConfigService {
 
     /**
      * Constructor for CredentialConfigService.
-     * @param credentialConfigRepository - Repository for CredentialConfig entity.
+     * @param credentialConfigRepository - Tenant-scoped credential configuration store.
      */
     constructor(
-        @InjectRepository(CredentialConfig)
-        private readonly credentialConfigRepository: Repository<CredentialConfig>,
+        @Inject(CREDENTIAL_CONFIGURATION_REPOSITORY)
+        private readonly credentialConfigRepository: CredentialConfigurationRepository,
         private readonly certService: CertService,
         private readonly filesService: FilesService,
         private readonly configImportService: ConfigImportService,
         private readonly configImportOrchestrator: ConfigImportOrchestratorService,
-        private readonly presentationsService: PresentationsService,
+        private readonly presentationConfigService: PresentationConfigService,
         private readonly tenantActionLogService: AuditLogService,
     ) {
         this.configImportOrchestrator.register(
@@ -70,10 +76,7 @@ export class CredentialConfigService {
                         .catch(() => false),
                 deleteExisting: (tid, data) =>
                     this.credentialConfigRepository
-                        .delete({
-                            id: data.id,
-                            tenantId: tid,
-                        })
+                        .deleteForTenant(tid, data.id)
                         .then(() => undefined),
                 loadData: (filePath) =>
                     loadConfigDto(filePath, CredentialConfigCreateSchema),
@@ -191,9 +194,7 @@ export class CredentialConfigService {
      * @returns A promise that resolves to an array of CredentialConfig entities.
      */
     get(tenantId: string) {
-        return this.credentialConfigRepository.find({
-            where: { tenantId },
-        });
+        return this.credentialConfigRepository.listForTenant(tenantId);
     }
 
     /**
@@ -203,10 +204,7 @@ export class CredentialConfigService {
      * @returns
      */
     getById(tenantId: string, id: string) {
-        return this.credentialConfigRepository.findOneByOrFail({
-            id,
-            tenantId,
-        });
+        return this.credentialConfigRepository.getForTenant(tenantId, id);
     }
 
     /**
@@ -231,7 +229,7 @@ export class CredentialConfigService {
                 ).presentationConfigId;
 
                 try {
-                    await this.presentationsService.getPresentationConfig(
+                    await this.presentationConfigService.getPresentationConfig(
                         presentationConfigId,
                         tenantId,
                     );
@@ -259,7 +257,7 @@ export class CredentialConfigService {
         config: CredentialConfigCreate,
         skipValidation = false,
         actorToken?: TokenPayload,
-        req?: Request,
+        requestMeta?: AuditLogRequestMeta,
     ) {
         await this.replaceImageReferences(tenantId, config);
         await this.validateAttestationKeyChain(tenantId, config.keyChainId);
@@ -281,7 +279,7 @@ export class CredentialConfigService {
                     this.sanitizeCredentialConfigForLog(saved),
                 ),
                 after: this.sanitizeCredentialConfigForLog(saved),
-                requestMeta: extractRequestMeta(req),
+                requestMeta,
             });
         }
 
@@ -304,7 +302,7 @@ export class CredentialConfigService {
         id: string,
         config: CredentialConfigUpdate,
         actorToken?: TokenPayload,
-        req?: Request,
+        requestMeta?: AuditLogRequestMeta,
     ) {
         await this.replaceImageReferences(tenantId, config);
         await this.validateIaeActions(tenantId, config);
@@ -332,7 +330,7 @@ export class CredentialConfigService {
                 ),
                 before: this.sanitizeCredentialConfigForLog(existing),
                 after: this.sanitizeCredentialConfigForLog(saved),
-                requestMeta: extractRequestMeta(req),
+                requestMeta,
             });
         }
 
@@ -349,13 +347,13 @@ export class CredentialConfigService {
         tenantId: string,
         id: string,
         actorToken?: TokenPayload,
-        req?: Request,
+        requestMeta?: AuditLogRequestMeta,
     ) {
         const existing = await this.getById(tenantId, id);
-        const result = await this.credentialConfigRepository.delete({
-            id,
+        const result = await this.credentialConfigRepository.deleteForTenant(
             tenantId,
-        });
+            id,
+        );
 
         if (actorToken) {
             await this.tenantActionLogService.record({
@@ -363,7 +361,7 @@ export class CredentialConfigService {
                 actionType: "credential_config_deleted",
                 actor: resolveAuditActor(actorToken),
                 before: this.sanitizeCredentialConfigForLog(existing),
-                requestMeta: extractRequestMeta(req),
+                requestMeta,
             });
         }
 

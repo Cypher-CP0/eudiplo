@@ -33,7 +33,7 @@ import { TrustList } from "./entities/trust-list.entity.js";
 import { TrustListVersion } from "./entities/trust-list-version.entity.js";
 import { TrustListCreateSchema } from "./schemas/trust-list.schema.js";
 
-export enum ServiceTypeIdentifier {
+enum ServiceTypeIdentifier {
     WalletIssuance = "http://uri.etsi.org/19602/SvcType/WalletSolution/Issuance",
     WalletRevocation = "http://uri.etsi.org/19602/SvcType/WalletSolution/Revocation",
     PIDIssuance = "http://uri.etsi.org/19602/SvcType/PID/Issuance",
@@ -73,7 +73,7 @@ export class TrustListService {
      */
     create(
         values: TrustListCreateDto,
-        tenant: TenantEntity,
+        tenant: Pick<TenantEntity, "id" | "name">,
     ): Promise<TrustList> {
         return this.buildAndSaveTrustList(values, tenant);
     }
@@ -83,7 +83,7 @@ export class TrustListService {
      * @param tenant
      * @returns
      */
-    findAll(tenant: TenantEntity): Promise<TrustList[]> {
+    findAll(tenant: Pick<TenantEntity, "id" | "name">): Promise<TrustList[]> {
         return this.trustListRepo.findBy({ tenantId: tenant.id });
     }
 
@@ -221,7 +221,7 @@ export class TrustListService {
      */
     private async buildAndSaveTrustList(
         config: TrustListCreateDto,
-        tenant: TenantEntity,
+        tenant: Pick<TenantEntity, "id" | "name">,
         existing?: TrustList,
     ): Promise<TrustList> {
         // Validate PEM certificates for external entities
@@ -540,7 +540,7 @@ export class TrustListService {
      * Create a LoTE document using @owf/eudi-lote
      */
     createList(
-        tenant: TenantEntity,
+        tenant: Pick<TenantEntity, "id" | "name">,
         entities: LoTETrustedEntity[],
         sequenceNumber = 1,
         walletProviders = false,
