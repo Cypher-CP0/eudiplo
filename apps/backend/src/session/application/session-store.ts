@@ -8,6 +8,10 @@ import type {
     SessionCredentialOffer,
     SessionRepository,
 } from "../ports/session.repository.js";
+import {
+    NO_SESSION_CONTEXT,
+    type SessionContext,
+} from "../ports/session-context.js";
 import { SessionNotFound } from "./session-errors.js";
 
 /** The repository operations other features may reach; maintenance stays internal. */
@@ -34,12 +38,16 @@ type SessionStoreRepository = Pick<
  * Every `get*` method throws {@link SessionNotFound} (HTTP 404) when no session
  * matches, and never queries with an empty key: an absent column value in a
  * TypeORM `where` clause would otherwise match any session.
+ * Every resolved session is bound to the current request's context.
  *
  * The management methods take an optional `scope`: the only session type the
  * caller may access. Sessions of the other type then read as missing.
  */
 export class SessionStore {
-    constructor(private readonly sessions: SessionStoreRepository) {}
+    constructor(
+        private readonly sessions: SessionStoreRepository,
+        private readonly context: SessionContext = NO_SESSION_CONTEXT,
+    ) {}
 
     getForTenant(
         tenantId: string,
@@ -160,11 +168,16 @@ export class SessionStore {
         return this.sessions.deleteForTenant(tenantId, sessionId, scope);
     }
 
-    findCredentialOffer(
+    async findCredentialOffer(
         tenantId: string,
         sessionId: string,
     ): Promise<SessionCredentialOffer | null> {
-        return this.sessions.findCredentialOffer(tenantId, sessionId);
+        const offer = await this.sessions.findCredentialOffer(
+            tenantId,
+            sessionId,
+        );
+        if (offer) this.context.bind({ id: sessionId, tenantId });
+        return offer;
     }
 
     /** Atomically clears a pending offer; exactly one concurrent caller wins. */
@@ -182,6 +195,7 @@ export class SessionStore {
         if (!key) throw new SessionNotFound();
         const session = await find(key);
         if (!session) throw new SessionNotFound();
+        this.context.bind(session);
         return session;
     }
 }
