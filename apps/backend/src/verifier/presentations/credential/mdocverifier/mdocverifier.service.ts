@@ -13,11 +13,12 @@ import { Span } from "nestjs-otel";
 import { PinoLogger } from "nestjs-pino";
 import { VerificationProvenance } from "../../../../session/domain/session-outcome.js";
 import {
-    isStatusListUnavailableError,
+    RevocationListUnavailableError,
     resolveRevocationPolicy,
 } from "../../../../trust/revocation-policy.util.js";
+import { StatusListVerifierService } from "../../../../trust/status-list-verifier.service.js";
 import { VerifierOptions } from "../../../../trust/types.js";
-import { mdocContext } from "../../mdoc-context.js";
+import { mdocContext, withFetch } from "../../mdoc-context.js";
 import {
     ChainValidationResult,
     CredentialChainValidationService,
@@ -95,6 +96,7 @@ interface MdocErrorDetails {
 export class MdocverifierService {
     constructor(
         private readonly chainValidation: CredentialChainValidationService,
+        private readonly statusListVerifier: StatusListVerifierService,
         private readonly logger: PinoLogger,
     ) {
         this.logger.setContext(MdocverifierService.name);
@@ -242,6 +244,24 @@ export class MdocverifierService {
             // is present in the credential. We attach status anchors unconditionally and
             // use revocation policy only to control fail-open/fail-closed behavior.
             const includeStatusCheck = revocationPolicy.enabled;
+
+            // Status lists and identifier lists named in the presented MSO are
+            // fetched under the outbound URL policy, not with the global
+            // `fetch`. @owf/mdoc reports a failed status check only by its
+            // message, which for a revoked identifier list contains the list's
+            // URI, so an unavailable list is recorded here instead of being
+            // recognised by the message.
+            let revocationListUnavailable = false;
+            const verificationContext = withFetch(async (input, init) => {
+                try {
+                    return await this.statusListVerifier.mdocFetch(input, init);
+                } catch (error) {
+                    if (error instanceof RevocationListUnavailableError) {
+                        revocationListUnavailable = true;
+                    }
+                    throw error;
+                }
+            });
             const attachStatusAnchorsForMdoc = true;
             let trustedCertificates = buildTrustedCertificates(
                 attachStatusAnchorsForMdoc,
@@ -275,13 +295,13 @@ export class MdocverifierService {
                         trustedCertificates,
                         disableStatusValidation: !includeStatusCheck,
                     },
-                    mdocContext,
+                    verificationContext,
                 );
             } catch (error) {
                 if (
                     !includeStatusCheck ||
                     revocationPolicy.failClosed ||
-                    !isStatusListUnavailableError(error)
+                    !revocationListUnavailable
                 ) {
                     throw error;
                 }
@@ -293,7 +313,7 @@ export class MdocverifierService {
                                 ? error.message
                                 : String(error),
                     },
-                    "Status list unavailable in best-effort mode, retrying mDOC verification without status check",
+                    "Status list or identifier list unavailable in best-effort mode, retrying mDOC verification without status check",
                 );
 
                 trustedCertificates = buildTrustedCertificates(false);
@@ -305,7 +325,7 @@ export class MdocverifierService {
                         trustedCertificates,
                         disableStatusValidation: true,
                     },
-                    mdocContext,
+                    verificationContext,
                 );
             }
 
