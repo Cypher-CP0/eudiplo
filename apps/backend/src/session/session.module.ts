@@ -1,6 +1,8 @@
 import { Module } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { TypeOrmModule } from "@nestjs/typeorm";
+import { AuditLogModule } from "../audit-log/audit-log.module.js";
+import { AuditLogService } from "../audit-log/audit-log.service.js";
 import { AuthModule } from "../auth/auth.module.js";
 import { TenantEntity } from "../auth/tenant/entities/tenant.entity.js";
 import { StatusListModule } from "../issuer/status-list/status-list.module.js";
@@ -13,6 +15,7 @@ import {
 } from "./adapters/session-maintenance.job.js";
 import { TypeOrmSessionRepository } from "./adapters/typeorm-session.repository.js";
 import { TypeOrmSessionRetentionPolicies } from "./adapters/typeorm-session-retention-policies.js";
+import { CancelSession } from "./application/cancel-session.js";
 import { ChangeSessionState } from "./application/change-session-state.js";
 import { CleanupSessions } from "./application/cleanup-sessions.js";
 import { CreateSession } from "./application/create-session.js";
@@ -22,6 +25,7 @@ import { SessionStore } from "./application/session-store.js";
 import { SessionCleanupMode } from "./domain/session-retention.js";
 import { Session } from "./entities/session.entity.js";
 import { SessionLogEntry } from "./entities/session-log-entry.entity.js";
+import { SessionLoggerService } from "./logging/session-logger.service.js";
 import { SessionLoggingModule } from "./logging/session-logging.module.js";
 import {
     SESSION_REPOSITORY,
@@ -32,7 +36,9 @@ import {
     type SessionContext,
 } from "./ports/session-context.js";
 import {
+    SESSION_CANCELLATION_PUBLISHER,
     SESSION_EVENT_PUBLISHER,
+    type SessionCancellationPublisher,
     type SessionEventPublisher,
 } from "./ports/session-event-publisher.js";
 import {
@@ -55,6 +61,7 @@ import { SESSION_SETTINGS, type SessionSettings } from "./session-settings.js";
         StatusListModule,
         SessionLoggingModule,
         AuthModule,
+        AuditLogModule,
     ],
     providers: [
         { provide: SESSION_CONTEXT, useClass: RequestSessionContext },
@@ -121,9 +128,14 @@ import { SESSION_SETTINGS, type SessionSettings } from "./session-settings.js";
                     1000,
             }),
         },
+        NestSessionEventPublisher,
         {
             provide: SESSION_EVENT_PUBLISHER,
-            useClass: NestSessionEventPublisher,
+            useExisting: NestSessionEventPublisher,
+        },
+        {
+            provide: SESSION_CANCELLATION_PUBLISHER,
+            useExisting: NestSessionEventPublisher,
         },
         OtelSessionMetrics,
         {
@@ -133,6 +145,44 @@ import { SESSION_SETTINGS, type SessionSettings } from "./session-settings.js";
                 repository: SessionRepository,
                 events: SessionEventPublisher,
             ) => new ChangeSessionState(repository, events),
+        },
+        {
+            provide: CancelSession,
+            inject: [
+                SessionStore,
+                ChangeSessionState,
+                SESSION_CANCELLATION_PUBLISHER,
+                SessionLoggerService,
+                AuditLogService,
+            ],
+            useFactory: (
+                store: SessionStore,
+                changeState: ChangeSessionState,
+                events: SessionCancellationPublisher,
+                sessionLog: SessionLoggerService,
+                auditLog: AuditLogService,
+            ) =>
+                new CancelSession(
+                    store,
+                    changeState,
+                    events,
+                    async (session, { reason, actor, requestMeta }) => {
+                        sessionLog.logSessionCancelled(session, {
+                            reason,
+                            actor,
+                        });
+                        await auditLog.record({
+                            tenantId: session.tenantId,
+                            actionType: "session_cancelled",
+                            actor,
+                            after: {
+                                sessionId: session.sessionId,
+                                ...(reason ? { reason } : {}),
+                            },
+                            requestMeta,
+                        });
+                    },
+                ),
         },
         SessionConfigService,
         {

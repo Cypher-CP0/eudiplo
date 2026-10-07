@@ -1,5 +1,6 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { PinoLogger } from "nestjs-pino";
+import type { CancellationActor } from "../application/cancel-session.js";
 import { SessionLogLevel } from "../entities/session-log-entry.entity.js";
 import { SessionLogStoreService } from "./session-log-store.service.js";
 import {
@@ -45,7 +46,7 @@ export class SessionLoggerService {
     }
 
     private persistLog(
-        context: AuditLogContext,
+        context: Pick<AuditLogContext, "sessionId">,
         level: SessionLogLevel,
         message: string,
         stage?: string,
@@ -222,5 +223,23 @@ export class SessionLoggerService {
             ...(this.verbose && { errorStack: error.stack }),
             ...additionalData,
         });
+    }
+
+    /**
+     * Log that an operator cancelled a pending session (audit event - persisted to DB)
+     */
+    logSessionCancelled(
+        context: { sessionId: string; tenantId: string },
+        detail: { reason?: string; actor?: CancellationActor },
+    ) {
+        if (!this.shouldLog()) return;
+
+        const message = `Session ${context.sessionId} cancelled`;
+
+        this.logger.info(
+            { ...context, event: "session_cancelled", ...detail },
+            message,
+        );
+        this.persistLog(context, "info", message, "cancellation", detail);
     }
 }

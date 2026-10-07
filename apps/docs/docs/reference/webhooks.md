@@ -161,10 +161,33 @@ When the wallet calls the [notification endpoint](../issuance/notifications.md),
 
 The response body is ignored.
 
+## Cancellation webhook
+
+When an operator [cancels a pending session](../concepts/sessions.md#cancelling-an-offer), EUDIPLO informs the session's webhook: the webhook passed with the presentation request, otherwise the webhook endpoint of the offer or presentation configuration.
+
+```json
+{
+    "status": "cancelled",
+    "session": "a6318799-dff4-4b60-9d1d-58703611bd23",
+    "reference": "order-4711",
+    "reason": "sent to wrong recipient"
+}
+```
+
+| Field       | Description                                                  |
+| ----------- | ------------------------------------------------------------ |
+| `status`    | Always `cancelled`                                           |
+| `session`   | ID of the cancelled session                                  |
+| `reference` | Your [reference](../concepts/sessions.md#your-own-reference), when one was set |
+| `reason`    | The reason passed when cancelling, when one was given        |
+
+The response body is ignored.
+
 ## Delivery
 
 - **One attempt.** Each webhook is a single `POST` with a JSON body. EUDIPLO does not retry.
 - **Synchronous.** The wallet's request waits for your webhook, because a presentation webhook can change the redirect. Answer quickly and do slow work afterwards.
 - **Presentation failures are best effort.** The session status is final before the webhook is sent. A failed delivery (connection error, non-2xx status, blocked URL) is logged and changes neither the session nor the wallet's result. Use [polling or the event stream](../presentation/receive-results.md) as a fallback.
+- **Cancellation webhooks are best effort.** The session is cancelled before the webhook is sent; a failed delivery is only logged.
 - **Notification failures are best effort.** EUDIPLO records the event and sets the session status before it sends the webhook. A failed delivery is logged and changes neither the session nor the answer to the wallet. The recorded events stay in `notifications` of the session.
 - **Outbound URL policy.** Webhook URLs must use HTTPS and resolve to public addresses unless `OUTBOUND_URL_ALLOW_HTTP` or `OUTBOUND_URL_ALLOW_PRIVATE_NETWORK` allow otherwise. With `OUTBOUND_URL_ALLOWED_HOSTS` set, the host must also be on that list; see [environment variables](environment-variables.md#webhook). A blocked URL counts as a failed delivery.

@@ -805,7 +805,8 @@ export const AuditLogResponseDtoSchema = {
                 'config_bundle_exported',
                 'config_bundle_imported',
                 'config_client_secret_generated',
-                'config_resource_detached'
+                'config_resource_detached',
+                'session_cancelled'
             ],
             type: 'string'
         },
@@ -3805,7 +3806,8 @@ export const SessionSchema = {
                 'fetched',
                 'completed',
                 'expired',
-                'failed'
+                'failed',
+                'cancelled'
             ],
             type: 'string'
         },
@@ -4082,6 +4084,21 @@ export const PaginatedSessionResponseDtoSchema = {
         'pageSize',
         'totalPages'
     ]
+} as const;
+
+export const CancelSessionDtoSchema = {
+    type: 'object',
+    properties: {
+        reason: {
+            type: 'string',
+            minLength: 1,
+            maxLength: 500,
+            description: 'Why the offer was cancelled. Stored in the audit logs and sent to the session webhook.',
+            example: 'sent to wrong recipient'
+        }
+    },
+    default: {},
+    additionalProperties: false
 } as const;
 
 export const SessionLogEntryResponseDtoSchema = {

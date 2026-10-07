@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import {
   client,
+  sessionControllerCancel,
   sessionControllerDeleteSession,
   sessionControllerGetAllSessions,
   sessionControllerGetSession,
@@ -20,6 +21,16 @@ export interface SessionLogEntry {
 }
 
 export type SessionQueryParams = NonNullable<SessionControllerGetAllSessionsData['query']>;
+
+/** Offers and requests a wallet has neither redeemed nor finished, the only ones that can be cancelled. */
+export function isCancellable(session: Pick<Session, 'status' | 'consumed'>): boolean {
+  return (session.status === 'active' || session.status === 'fetched') && !session.consumed;
+}
+
+/** Whether a cancellation was rejected because the session is no longer pending (HTTP 409). */
+export function isCancelConflict(error: unknown): boolean {
+  return (error as { statusCode?: number } | null)?.statusCode === 409;
+}
 
 @Injectable({
   providedIn: 'root',
@@ -89,6 +100,16 @@ export class SessionManagementService {
       console.error('Error deleting session:', error);
       throw new Error(`Failed to delete session ${sessionId}`, { cause: error });
     }
+  }
+
+  /**
+   * Cancel a pending offer or presentation request, so a wallet can no longer use it
+   */
+  async cancelSession(sessionId: string, reason?: string): Promise<void> {
+    await sessionControllerCancel({
+      path: { id: sessionId },
+      body: reason ? { reason } : {},
+    });
   }
 
   /**
